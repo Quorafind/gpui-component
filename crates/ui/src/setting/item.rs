@@ -1,6 +1,6 @@
 use gpui::{
     AnyElement, App, Axis, Div, InteractiveElement as _, IntoElement, ParentElement, SharedString,
-    Stateful, Styled, Window, div, prelude::FluentBuilder as _,
+    Stateful, Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use std::{any::TypeId, ops::Deref, rc::Rc};
 
@@ -170,17 +170,23 @@ impl SettingItem {
                     .overflow_hidden()
                     .map(|this| {
                         if layout.is_horizontal() {
-                            this.h_flex().justify_between().items_start()
+                            // Use flex_wrap for responsive layout - wraps to vertical when narrow
+                            this.h_flex()
+                                .flex_wrap()
+                                .justify_between()
+                                .items_start()
+                                .gap_x_3()
+                                .gap_y_2()
                         } else {
-                            this.v_flex()
+                            this.v_flex().gap_3()
                         }
                     })
-                    .gap_3()
                     .child(
                         v_flex()
                             .map(|this| {
                                 if layout.is_horizontal() {
-                                    this.flex_1().max_w_3_5()
+                                    // Min-width triggers wrapping, flex_1 allows growth
+                                    this.flex_1().min_w(px(200.0))
                                 } else {
                                     this.w_full()
                                 }
@@ -197,12 +203,18 @@ impl SettingItem {
                                 )
                             }),
                     )
-                    .child(div().id("field").child(Self::render_field(
-                        field,
-                        RenderOptions { layout, ..*options },
-                        window,
-                        cx,
-                    )))
+                    .child(
+                        div()
+                            .id("field")
+                            // Don't shrink, will wrap to next line when narrow
+                            .flex_shrink_0()
+                            .child(Self::render_field(
+                                field,
+                                RenderOptions { layout, ..*options },
+                                window,
+                                cx,
+                            )),
+                    )
                     .into_any_element(),
                 SettingItem::Element { render } => {
                     (render)(&options, window, cx).into_any_element()

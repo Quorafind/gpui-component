@@ -6,6 +6,7 @@ mod element;
 mod indent;
 mod input;
 mod lsp;
+pub mod markdown_input;
 mod mask_pattern;
 mod mode;
 mod movement;
@@ -23,6 +24,10 @@ pub use cursor::*;
 pub use indent::TabSize;
 pub use input::*;
 pub use lsp::*;
+pub use markdown_input::{
+    BlockRefChangeCallback, EmbeddedBlockRefInput, EmbeddedFocusState, MarkdownInput,
+    MarkdownInputEvent, MarkdownInputState, MoveDown as MarkdownMoveDown, MoveUp as MarkdownMoveUp,
+};
 pub use mask_pattern::MaskPattern;
 pub use number_input::{NumberInput, NumberInputEvent, StepAction};
 pub use otp_input::*;

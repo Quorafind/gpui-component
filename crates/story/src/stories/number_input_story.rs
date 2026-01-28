@@ -146,6 +146,9 @@ impl NumberInputStory {
             }
             InputEvent::Focus => println!("Focus"),
             InputEvent::Blur => println!("Blur"),
+            InputEvent::BackspaceAtStart => println!("BackspaceAtStart"),
+            InputEvent::UndoEmpty => println!("UndoEmpty"),
+            InputEvent::RedoEmpty => println!("RedoEmpty"),
         }
     }
 

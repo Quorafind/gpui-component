@@ -399,7 +399,7 @@ impl RenderOnce for Input {
                 ))
             })
             .when(!state.mode.is_multi_line(), |this| {
-                this.child(self.state.clone())
+                this.flex_1().child(self.state.clone())
             })
             .when(has_suffix, |this| {
                 this.pr(self.size.input_px()).child(

@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
     task::Poll,
@@ -6,23 +7,22 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext as _, Bounds, ClipboardItem, Context, FocusHandle, IntoElement, KeyBinding,
-    ListState, ParentElement as _, Pixels, Point, Render, SharedString, Size, Styled as _, Task,
-    Window, prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _, px, App, AppContext as _, Bounds, ClipboardItem, Context,
+    FocusHandle, IntoElement, KeyBinding, ListState, ParentElement as _, Pixels, Point, Render,
+    SharedString, Size, Styled as _, Task, Window,
 };
-use smol::{Timer, stream::StreamExt as _};
+use smol::{stream::StreamExt as _, Timer};
 
 use crate::{
-    ActiveTheme, ElementExt,
     highlighter::HighlightTheme,
     input::{self, Copy},
     text::{
-        CodeBlockActionsFn, TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
+        CodeBlockActionsFn, TextViewStyle,
     },
-    v_flex,
+    v_flex, ActiveTheme, ElementExt,
 };
 
 const UPDATE_DELAY: Duration = Duration::from_millis(50);
@@ -386,14 +386,19 @@ fn parse_content(format: TextViewFormat, options: &UpdateOptions) -> Result<(), 
 
     let mut content = options.content.lock().unwrap();
     let mut source = String::new();
-    if options.append
-        && let Some(last_block) = content.document.blocks.pop()
-        && let Some(span) = last_block.span()
-    {
-        node_cx.offset = span.start;
-        let last_source = &content.document.source[span.start..];
-        source.push_str(last_source);
-        source.push_str(&options.pending_text);
+    if options.append {
+        if let Some(last_block) = content.document.blocks.pop() {
+            if let Some(span) = last_block.span() {
+                node_cx.offset = span.start;
+                let last_source = &content.document.source[span.start..];
+                source.push_str(last_source);
+                source.push_str(&options.pending_text);
+            } else {
+                source = options.pending_text.to_string();
+            }
+        } else {
+            source = options.pending_text.to_string();
+        }
     } else {
         source = options.pending_text.to_string();
     }
@@ -443,7 +448,7 @@ fn selection_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::{Bounds, point, px, size};
+    use gpui::{point, px, size, Bounds};
 
     #[test]
     fn test_text_view_state_selection_bounds() {

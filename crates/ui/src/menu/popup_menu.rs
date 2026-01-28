@@ -274,6 +274,9 @@ pub struct PopupMenu {
     pub(crate) menu_items: Vec<PopupMenuItem>,
     /// The focus handle of Entity to handle actions.
     pub(crate) action_context: Option<FocusHandle>,
+    /// The key context string for looking up key bindings (e.g., "Outliner").
+    /// Used as fallback when action_context is None or binding lookup fails.
+    pub(crate) key_binding_context: Option<String>,
     selected_index: Option<usize>,
     min_width: Option<Pixels>,
     max_width: Option<Pixels>,
@@ -298,6 +301,7 @@ impl PopupMenu {
         Self {
             focus_handle: cx.focus_handle(),
             action_context: None,
+            key_binding_context: None,
             parent_menu: None,
             menu_items: Vec::new(),
             selected_index: None,
@@ -330,6 +334,16 @@ impl PopupMenu {
     /// Then the action will be dispatched to this handle.
     pub fn action_context(mut self, handle: FocusHandle) -> Self {
         self.action_context = Some(handle);
+        self
+    }
+
+    /// Set the key binding context string for looking up keyboard shortcuts.
+    ///
+    /// This context string (e.g., "Outliner") is used when looking up key bindings
+    /// for menu items. It's particularly useful when the menu is opened from a
+    /// context where child elements (like text inputs) might have conflicting bindings.
+    pub fn key_binding_context(mut self, context: impl Into<String>) -> Self {
+        self.key_binding_context = Some(context.into());
         self
     }
 
@@ -979,16 +993,16 @@ impl PopupMenu {
     ) -> Option<Kbd> {
         let action = action?;
 
-        match self
-            .action_context
-            .as_ref()
-            .and_then(|handle| Kbd::binding_for_action_in(action.as_ref(), handle, window))
-        {
-            Some(kbd) => Some(kbd),
-            // Fallback to App level key binding
-            None => Kbd::binding_for_action(action.as_ref(), None, window),
+        // Try looking up binding from action_context first
+        if let Some(handle) = self.action_context.as_ref() {
+            if let Some(kbd) = Kbd::binding_for_action_in(action.as_ref(), handle, window) {
+                return Some(kbd);
+            }
         }
-        .map(|this| {
+
+        // Fallback to key_binding_context string if provided
+        let context = self.key_binding_context.as_deref();
+        Kbd::binding_for_action(action.as_ref(), context, window).map(|this| {
             this.p_0()
                 .flex_nowrap()
                 .border_0()

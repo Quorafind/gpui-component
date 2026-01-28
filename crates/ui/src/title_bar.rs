@@ -1,13 +1,13 @@
 use std::rc::Rc;
 
 use crate::{
-    ActiveTheme, Icon, IconName, InteractiveElementExt as _, Sizable as _, StyledExt, h_flex,
+    h_flex, ActiveTheme, Icon, IconName, InteractiveElementExt as _, Sizable as _, StyledExt,
 };
 use gpui::{
-    AnyElement, App, ClickEvent, Context, Decorations, Hsla, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, Render, RenderOnce, StatefulInteractiveElement as _,
-    StyleRefinement, Styled, TitlebarOptions, Window, WindowControlArea, div,
-    prelude::FluentBuilder as _, px,
+    div, prelude::FluentBuilder as _, px, AnyElement, App, ClickEvent, Context, Decorations, Hsla,
+    InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, RenderOnce,
+    StatefulInteractiveElement as _, StyleRefinement, Styled, TitlebarOptions, Window,
+    WindowControlArea,
 };
 use smallvec::SmallVec;
 
@@ -161,21 +161,20 @@ impl RenderOnce for ControlIcon {
             _ => None,
         };
 
-        div()
+        let control_area = self.window_control_area();
+
+        h_flex()
             .id(self.id())
-            .flex()
+            .justify_center()
+            .content_center()
+            .occlude()
             .w(TITLE_BAR_HEIGHT)
             .h_full()
             .flex_shrink_0()
-            .justify_center()
-            .content_center()
-            .items_center()
             .text_color(cx.theme().foreground)
             .hover(|style| style.bg(hover_bg).text_color(hover_fg))
             .active(|style| style.bg(active_bg).text_color(hover_fg))
-            .when(is_windows, |this| {
-                this.window_control_area(self.window_control_area())
-            })
+            .when(is_windows, |this| this.window_control_area(control_area))
             .when(is_linux, |this| {
                 this.on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     window.prevent_default();
@@ -258,10 +257,10 @@ impl RenderOnce for TitleBar {
         let state = window.use_state(cx, |_, _| TitleBarState { should_move: false });
 
         div().flex_shrink_0().child(
-            div()
+            h_flex()
                 .id("title-bar")
-                .flex()
-                .flex_row()
+                .window_control_area(WindowControlArea::Drag)
+                .w_full()
                 .items_center()
                 .justify_between()
                 .h(TITLE_BAR_HEIGHT)
@@ -270,6 +269,7 @@ impl RenderOnce for TitleBar {
                 .border_color(cx.theme().title_bar_border)
                 .bg(cx.theme().title_bar)
                 .refine_style(&self.style)
+                .content_stretch()
                 .when(is_linux, |this| {
                     this.on_double_click(|_, window, _| window.zoom_window())
                 })
@@ -298,29 +298,22 @@ impl RenderOnce for TitleBar {
                     }
                 }))
                 .child(
-                    h_flex()
+                    div()
                         .id("bar")
-                        .window_control_area(WindowControlArea::Drag)
-                        .when(window.is_fullscreen(), |this| this.pl_3())
-                        .h_full()
+                        .flex()
+                        .flex_row()
+                        .items_center()
                         .justify_between()
-                        .flex_shrink_0()
-                        .flex_1()
-                        .when(is_linux && is_client_decorated, |this| {
-                            this.child(
-                                div()
-                                    .top_0()
-                                    .left_0()
-                                    .absolute()
-                                    .size_full()
-                                    .h_full()
-                                    .on_mouse_down(MouseButton::Right, move |ev, window, _| {
-                                        window.show_window_menu(ev.position)
-                                    }),
-                            )
-                        })
+                        .overflow_x_hidden()
+                        .w_full()
+                        .window_control_area(WindowControlArea::Drag)
                         .children(self.children),
                 )
+                .when(is_linux && is_client_decorated, |this| {
+                    this.on_mouse_down(MouseButton::Right, move |ev, window, _| {
+                        window.show_window_menu(ev.position)
+                    })
+                })
                 .child(WindowControls {
                     on_close_window: self.on_close_window,
                 }),

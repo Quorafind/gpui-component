@@ -168,6 +168,9 @@ impl InputStory {
             InputEvent::PressEnter { secondary } => println!("PressEnter secondary: {}", secondary),
             InputEvent::Focus => println!("Focus"),
             InputEvent::Blur => println!("Blur"),
+            InputEvent::BackspaceAtStart => println!("BackspaceAtStart"),
+            InputEvent::UndoEmpty => println!("UndoEmpty"),
+            InputEvent::RedoEmpty => println!("RedoEmpty"),
         };
     }
 

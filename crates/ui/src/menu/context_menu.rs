@@ -27,6 +27,21 @@ pub trait ContextMenuExt: ParentElement + Styled {
         let id = format!("context-menu-{:p}", &self as *const _);
         ContextMenu::new(id, self).menu(f)
     }
+
+    /// Add a context menu with a specific key binding context.
+    ///
+    /// The `key_context` parameter specifies the context string (e.g., "Outliner") used
+    /// for looking up keyboard shortcuts. This is useful when child elements have
+    /// conflicting key bindings.
+    fn context_menu_with_key_context(
+        self,
+        key_context: impl Into<String>,
+        f: impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
+    ) -> ContextMenu<Self> {
+        ContextMenu::new("context-menu", self)
+            .menu(f)
+            .with_key_binding_context(key_context)
+    }
 }
 
 impl<E: ParentElement + Styled> ContextMenuExt for E {}
@@ -39,6 +54,8 @@ pub struct ContextMenu<E: ParentElement + Styled + Sized> {
     // This is not in use, just for style refinement forwarding.
     _ignore_style: StyleRefinement,
     anchor: Corner,
+    /// The key binding context string for looking up keyboard shortcuts.
+    key_binding_context: Option<String>,
 }
 
 impl<E: ParentElement + Styled> ContextMenu<E> {
@@ -50,6 +67,7 @@ impl<E: ParentElement + Styled> ContextMenu<E> {
             menu: None,
             anchor: Corner::TopLeft,
             _ignore_style: StyleRefinement::default(),
+            key_binding_context: None,
         }
     }
 
@@ -60,6 +78,17 @@ impl<E: ParentElement + Styled> ContextMenu<E> {
         F: Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static,
     {
         self.menu = Some(Rc::new(builder));
+        self
+    }
+
+    /// Set the key binding context string for looking up keyboard shortcuts.
+    ///
+    /// This context string (e.g., "Outliner") is used when looking up key bindings
+    /// for menu items. It's particularly useful when the menu is opened from a
+    /// context where child elements (like text inputs) might have conflicting bindings.
+    #[must_use]
+    pub fn with_key_binding_context(mut self, context: impl Into<String>) -> Self {
+        self.key_binding_context = Some(context.into());
         self
     }
 
@@ -255,8 +284,9 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
             element.paint(window, cx);
         }
 
-        // Take the builder before setting up element state to avoid borrow issues
+        // Take the builder and key_binding_context before setting up element state to avoid borrow issues
         let builder = self.menu.clone();
+        let key_binding_context = self.key_binding_context.clone();
 
         self.with_element_state(
             id.unwrap(),
@@ -266,14 +296,22 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                 let shared_state = state.shared_state.clone();
 
                 let hitbox = hitbox.clone();
+                let key_binding_context = key_binding_context.clone();
                 // When right mouse click, to build content menu, and show it at the mouse position.
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if phase.bubble()
                         && event.button == MouseButton::Right
                         && hitbox.is_hovered(window)
                     {
+                        // Stop propagation to prevent multiple context menus from appearing
+                        cx.stop_propagation();
+
                         {
                             let mut shared_state = shared_state.borrow_mut();
+                            // If menu is already open at same position, skip
+                            if shared_state.open && shared_state.position == event.position {
+                                return;
+                            }
                             // Clear any existing menu view to allow immediate replacement
                             // Set the new position and open the menu
                             shared_state.menu_view = None;
@@ -286,12 +324,19 @@ impl<E: ParentElement + Styled + IntoElement + 'static> Element for ContextMenu<
                         window.defer(cx, {
                             let shared_state = shared_state.clone();
                             let builder = builder.clone();
+                            let key_binding_context = key_binding_context.clone();
                             move |window, cx| {
                                 let menu = PopupMenu::build(window, cx, move |menu, window, cx| {
                                     let Some(build) = &builder else {
                                         return menu;
                                     };
-                                    build(menu, window, cx)
+                                    let menu = build(menu, window, cx);
+                                    // Set key_binding_context for proper shortcut lookup
+                                    if let Some(ctx) = &key_binding_context {
+                                        menu.key_binding_context(ctx.clone())
+                                    } else {
+                                        menu
+                                    }
                                 });
 
                                 // Set up the subscription for dismiss handling
