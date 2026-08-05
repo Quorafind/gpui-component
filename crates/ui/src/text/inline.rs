@@ -192,45 +192,28 @@ impl Inline {
         mask_bounds: Bounds<Pixels>,
     ) -> Vec<Bounds<Pixels>> {
         let mut line_bounds = Vec::new();
-        let mut current_line_y = None;
-        let mut current_bounds: Option<Bounds<Pixels>> = None;
-        let mut offset = 0;
+        let mut line_origin = text_layout.bounds().origin;
 
-        for c in self.text.chars() {
-            let next_offset = offset + c.len_utf8();
-            let Some(pos) = text_layout.position_for_index(offset) else {
-                offset = next_offset;
-                continue;
-            };
-
-            let mut char_width = line_height.half();
-            if let Some(next_pos) = text_layout.position_for_index(next_offset) {
-                if next_pos.y == pos.y {
-                    char_width = next_pos.x - pos.x;
-                }
-            }
-
-            let bounds = Bounds::from_corners(pos, point(pos.x + char_width, pos.y + line_height))
-                .intersect(&mask_bounds);
-            if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
-                if current_line_y == Some(pos.y) {
-                    if let Some(current) = current_bounds.as_mut() {
-                        *current = current.union(&bounds);
+        for line in text_layout.line_layouts() {
+            for_each_visual_line_width(
+                line.wrap_boundaries().iter().map(|boundary| {
+                    line.runs()[boundary.run_ix].glyphs[boundary.glyph_ix]
+                        .position
+                        .x
+                }),
+                line.unwrapped_layout.width,
+                |width| {
+                    let bounds = Bounds::from_corners(
+                        line_origin,
+                        point(line_origin.x + width, line_origin.y + line_height),
+                    )
+                    .intersect(&mask_bounds);
+                    if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
+                        line_bounds.push(bounds);
                     }
-                } else {
-                    if let Some(current) = current_bounds.take() {
-                        line_bounds.push(current);
-                    }
-                    current_line_y = Some(pos.y);
-                    current_bounds = Some(bounds);
-                }
-            }
-
-            offset = next_offset;
-        }
-
-        if let Some(current) = current_bounds {
-            line_bounds.push(current);
+                    line_origin.y += line_height;
+                },
+            );
         }
 
         line_bounds
@@ -530,6 +513,21 @@ impl Element for Inline {
     }
 }
 
+fn for_each_visual_line_width(
+    wrap_positions: impl IntoIterator<Item = Pixels>,
+    line_width: Pixels,
+    mut visit: impl FnMut(Pixels),
+) {
+    let mut line_start_x = px(0.);
+    for line_end_x in wrap_positions
+        .into_iter()
+        .chain(std::iter::once(line_width))
+    {
+        visit((line_end_x - line_start_x).max(px(0.)));
+        line_start_x = line_end_x;
+    }
+}
+
 fn selection_for_multi_click(
     text: &str,
     text_layout: &TextLayout,
@@ -597,8 +595,16 @@ fn point_in_text_selection(
 
 #[cfg(test)]
 mod tests {
-    use super::point_in_text_selection;
+    use super::{for_each_visual_line_width, point_in_text_selection};
     use gpui::{point, px};
+
+    #[test]
+    fn test_visual_line_widths_follow_wrap_boundaries() {
+        let mut widths = Vec::new();
+        for_each_visual_line_width([px(40.), px(95.)], px(120.), |width| widths.push(width));
+
+        assert_eq!(widths, vec![px(40.), px(55.), px(25.)]);
+    }
 
     #[test]
     fn test_point_in_text_selection() {
