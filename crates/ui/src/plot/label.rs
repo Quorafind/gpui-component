@@ -22,6 +22,7 @@ fn shape_label(
         font: window.text_style().font(),
         color,
         background_color: None,
+        background_radius: None,
         underline: None,
         strikethrough: None,
     };

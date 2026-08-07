@@ -98,6 +98,7 @@ impl TextElement {
                 font: style.font(),
                 color: Hsla::default(),
                 background_color: None,
+                background_radius: None,
                 strikethrough: None,
                 underline: None,
             }],

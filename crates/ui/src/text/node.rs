@@ -989,7 +989,12 @@ impl Paragraph {
                         highlight.background_color = Some(cx.theme().accent);
                     }
                     if let Some(color) = style.highlight {
-                        highlight.background_color = Some(color);
+                        let mark_highlight =
+                            node_cx.style.mark_highlight.unwrap_or(HighlightStyle {
+                                background_color: Some(color),
+                                ..Default::default()
+                            });
+                        highlight = highlight.highlight(mark_highlight);
                     }
 
                     if let Some(mut link_mark) = style.link.clone() {

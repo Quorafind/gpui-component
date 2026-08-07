@@ -859,6 +859,7 @@ impl TextElement {
                     font: style.font(),
                     color: gpui::black(),
                     background_color: None,
+                    background_radius: None,
                     underline: None,
                     strikethrough: None,
                 }],
@@ -913,6 +914,7 @@ impl TextElement {
                 font: style.font(),
                 color: invisible_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }],
@@ -928,6 +930,7 @@ impl TextElement {
                 font: style.font(),
                 color: invisible_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }],
@@ -985,6 +988,7 @@ impl TextElement {
                 font: font.clone(),
                 color: completion_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             };
@@ -1008,6 +1012,7 @@ impl TextElement {
                     font: font.clone(),
                     color: completion_color,
                     background_color: None,
+                    background_radius: None,
                     underline: None,
                     strikethrough: None,
                 };
@@ -1621,6 +1626,7 @@ impl Element for TextElement {
             font: style.font(),
             color: text_color,
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -1629,6 +1635,7 @@ impl Element for TextElement {
             font: style.font(),
             color: text_color,
             background_color: None,
+            background_radius: None,
             underline: Some(UnderlineStyle {
                 thickness: px(1.),
                 color: Some(text_color),
@@ -1723,6 +1730,7 @@ impl Element for TextElement {
                         font: style.font(),
                         color: gpui::black(),
                         background_color: None,
+                        background_radius: None,
                         underline: None,
                         strikethrough: None,
                     }],
@@ -1825,6 +1833,7 @@ impl Element for TextElement {
                 font: style.font(),
                 color: cx.theme().muted_foreground,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }];
@@ -1833,6 +1842,7 @@ impl Element for TextElement {
                 font: style.font(),
                 color: cx.theme().foreground,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }];
@@ -2415,6 +2425,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::black(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -2473,6 +2484,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::black(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -2511,6 +2523,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::blue(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
