@@ -896,6 +896,13 @@ impl PartialEq for NodeContext {
     }
 }
 
+fn resolved_mark_highlight(color: Hsla, style: &TextViewStyle) -> HighlightStyle {
+    style.mark_highlight.unwrap_or(HighlightStyle {
+        background_color: Some(color),
+        ..Default::default()
+    })
+}
+
 impl Paragraph {
     fn render(&self, node_cx: &NodeContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let span = self.span;
@@ -989,12 +996,7 @@ impl Paragraph {
                         highlight.background_color = Some(cx.theme().accent);
                     }
                     if let Some(color) = style.highlight {
-                        let mark_highlight =
-                            node_cx.style.mark_highlight.unwrap_or(HighlightStyle {
-                                background_color: Some(color),
-                                ..Default::default()
-                            });
-                        highlight = highlight.highlight(mark_highlight);
+                        highlight = highlight.highlight(resolved_mark_highlight(color, &node_cx.style));
                     }
 
                     if let Some(mut link_mark) = style.link.clone() {
@@ -1153,7 +1155,7 @@ impl Paragraph {
                     highlight.background_color = Some(cx.theme().accent);
                 }
                 if let Some(color) = style.highlight {
-                    highlight.background_color = Some(color);
+                    highlight = highlight.highlight(resolved_mark_highlight(color, &node_cx.style));
                 }
 
                 if let Some(mut link_mark) = style.link.clone() {
@@ -1893,6 +1895,23 @@ impl BlockNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mark_highlight_resolution_uses_configured_style() {
+        let parsed_color = gpui::yellow();
+        let fallback = resolved_mark_highlight(parsed_color, &TextViewStyle::default());
+        assert_eq!(fallback.background_color, Some(parsed_color));
+        assert_eq!(fallback.background_radius, None);
+
+        let configured = HighlightStyle {
+            color: Some(gpui::red()),
+            background_color: Some(gpui::blue()),
+            background_radius: Some(px(6.)),
+            ..Default::default()
+        };
+        let style = TextViewStyle::default().mark_highlight(configured);
+        assert_eq!(resolved_mark_highlight(parsed_color, &style), configured);
+    }
 
     #[test]
     fn code_block_equality_includes_code_content() {
