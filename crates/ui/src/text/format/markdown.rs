@@ -44,14 +44,68 @@ fn parse_table_row(table: &mut Table, node: &mdast::TableRow, cx: &mut NodeConte
 
 fn parse_table_cell(row: &mut node::TableRow, node: &mdast::TableCell, cx: &mut NodeContext) {
     let mut paragraph = Paragraph::default();
-    node.children.iter().for_each(|c| {
-        parse_paragraph(&mut paragraph, c, cx);
-    });
+    parse_paragraph_children(&mut paragraph, &node.children, cx);
     let table_cell = node::TableCell {
         children: paragraph,
         ..Default::default()
     };
     row.children.push(table_cell);
+}
+
+fn inline_mark_tag(node: &mdast::Node) -> Option<bool> {
+    let Node::Html(html) = node else {
+        return None;
+    };
+    match html.value.trim().to_ascii_lowercase().as_str() {
+        "<mark>" => Some(true),
+        "</mark>" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_paragraph_children(
+    paragraph: &mut Paragraph,
+    children: &[mdast::Node],
+    cx: &mut NodeContext,
+) -> String {
+    let mut text = String::new();
+    let mut index = 0;
+
+    while index < children.len() {
+        if inline_mark_tag(&children[index]) == Some(true) {
+            let mut depth = 1;
+            let mut closing_index = index + 1;
+            while closing_index < children.len() {
+                match inline_mark_tag(&children[closing_index]) {
+                    Some(true) => depth += 1,
+                    Some(false) => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    None => {}
+                }
+                closing_index += 1;
+            }
+
+            if depth == 0 {
+                text.push_str(&merge_children_with_mark(
+                    paragraph,
+                    &children[index + 1..closing_index],
+                    TextMark::default().highlight(crate::yellow(200)),
+                    cx,
+                ));
+                index = closing_index + 1;
+                continue;
+            }
+        }
+
+        text.push_str(&parse_paragraph(paragraph, &children[index], cx));
+        index += 1;
+    }
+
+    text
 }
 
 /// Push a text run with its existing `marks` plus `new_mark` across the full
@@ -95,59 +149,54 @@ fn merge_children_with_mark(
     mark: TextMark,
     cx: &mut NodeContext,
 ) -> String {
-    let mut text = String::new();
+    let mut child_paragraph = Paragraph::default();
+    let text = parse_paragraph_children(&mut child_paragraph, children, cx);
     let mut merged_text = String::new();
     let mut merged_marks = Vec::new();
 
-    for child in children {
-        let mut child_paragraph = Paragraph::default();
-        let child_text = parse_paragraph(&mut child_paragraph, child, cx);
-        text.push_str(&child_text);
+    for mut node in child_paragraph.children {
+        if let Some(mut image) = node.image.take() {
+            if let Some(link_mark) = mark.link.clone() {
+                image.link = Some(link_mark);
+            }
 
-        for mut node in child_paragraph.children {
-            if let Some(mut image) = node.image.take() {
-                if let Some(link_mark) = mark.link.clone() {
-                    image.link = Some(link_mark);
-                }
-
-                // GPUI InteractiveText does not support inline images, so
-                // flush the accumulated text run and emit the image as its
-                // own sibling InlineNode.
-                push_merged(
-                    paragraph,
-                    std::mem::take(&mut merged_text),
-                    std::mem::take(&mut merged_marks),
-                    mark.clone(),
-                );
-                paragraph.push(InlineNode::image(image));
-            } else if node.math.is_some() {
-                // Math must remain a distinct inline child so a renderer can
-                // replace it later without reparsing the Markdown.
-                push_merged(
-                    paragraph,
-                    std::mem::take(&mut merged_text),
-                    std::mem::take(&mut merged_marks),
-                    mark.clone(),
-                );
-                let len = node.text.len();
-                if let Some((range, child_mark)) = node.marks.last_mut()
-                    && range.start == 0
-                    && range.end == len
-                {
-                    child_mark.merge(mark.clone());
-                } else {
-                    node.marks.push((0..len, mark.clone()));
-                }
-                paragraph.push(node);
+            // GPUI InteractiveText does not support inline images, so
+            // flush the accumulated text run and emit the image as its
+            // own sibling InlineNode.
+            push_merged(
+                paragraph,
+                std::mem::take(&mut merged_text),
+                std::mem::take(&mut merged_marks),
+                mark.clone(),
+            );
+            paragraph.push(InlineNode::image(image));
+        } else if node.math.is_some() {
+            // Math must remain a distinct inline child so a renderer can
+            // replace it later without reparsing the Markdown.
+            push_merged(
+                paragraph,
+                std::mem::take(&mut merged_text),
+                std::mem::take(&mut merged_marks),
+                mark.clone(),
+            );
+            let len = node.text.len();
+            if let Some((range, child_mark)) = node.marks.last_mut()
+                && range.start == 0
+                && range.end == len
+            {
+                child_mark.merge(mark.clone());
             } else {
-                let merged_offset = merged_text.len();
-                merged_text.push_str(&node.text);
-                for (range, child_mark) in node.marks {
-                    merged_marks.push((
-                        range.start + merged_offset..range.end + merged_offset,
-                        child_mark,
-                    ));
-                }
+                node.marks.push((0..len, mark.clone()));
+            }
+            paragraph.push(node);
+        } else {
+            let merged_offset = merged_text.len();
+            merged_text.push_str(&node.text);
+            for (range, child_mark) in node.marks {
+                merged_marks.push((
+                    range.start + merged_offset..range.end + merged_offset,
+                    child_mark,
+                ));
             }
         }
     }
@@ -194,9 +243,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
 
     match node {
         Node::Paragraph(val) => {
-            val.children.iter().for_each(|c| {
-                text.push_str(&parse_paragraph(paragraph, c, cx));
-            });
+            text = parse_paragraph_children(paragraph, &val.children, cx);
         }
         Node::Text(val) => {
             text = val.value.clone();
@@ -365,9 +412,7 @@ fn ast_to_node(
         Node::Root(_) => unreachable!("node::Root should be handled separately"),
         Node::Paragraph(val) => {
             let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
+            parse_paragraph_children(&mut paragraph, &val.children, cx);
             paragraph.span = new_span(val.position, cx);
             BlockNode::Paragraph(paragraph)
         }
@@ -419,9 +464,7 @@ fn ast_to_node(
         )),
         Node::Heading(val) => {
             let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
+            parse_paragraph_children(&mut paragraph, &val.children, cx);
 
             BlockNode::Heading {
                 level: val.depth,
@@ -467,17 +510,13 @@ fn ast_to_node(
         )),
         Node::MdxJsxTextElement(val) => {
             let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
+            parse_paragraph_children(&mut paragraph, &val.children, cx);
             paragraph.span = new_span(val.position, cx);
             BlockNode::Paragraph(paragraph)
         }
         Node::MdxJsxFlowElement(val) => {
             let mut paragraph = Paragraph::default();
-            val.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
+            parse_paragraph_children(&mut paragraph, &val.children, cx);
             paragraph.span = new_span(val.position, cx);
             BlockNode::Paragraph(paragraph)
         }
@@ -512,9 +551,7 @@ fn ast_to_node(
                 },
             )]));
 
-            def.children.iter().for_each(|c| {
-                parse_paragraph(&mut paragraph, c, cx);
-            });
+            parse_paragraph_children(&mut paragraph, &def.children, cx);
             paragraph.span = new_span(def.position, cx);
             BlockNode::Paragraph(paragraph)
         }
@@ -614,6 +651,70 @@ mod tests {
         assert_eq!(
             document.to_markdown(),
             "Normal **bold** and $x + y$.\n\n$$\nz^2\n$$\n\nAfter."
+        );
+    }
+
+    #[test]
+    fn inline_html_mark_applies_to_its_text() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "Before <mark>@app/</mark> after.",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let marked = paragraph
+            .children
+            .iter()
+            .find(|child| child.text.as_ref() == "@app/")
+            .expect("expected marked text");
+        assert!(
+            marked
+                .marks
+                .iter()
+                .any(|(_, mark)| mark.highlight.is_some()),
+            "inline <mark> should highlight its contents"
+        );
+    }
+
+    #[test]
+    fn inline_html_mark_composes_with_markdown_formatting() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "**<mark>@app/</mark>** and _<mark>/help</mark>_",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let mention = paragraph
+            .children
+            .iter()
+            .find(|child| child.text.as_ref() == "@app/")
+            .expect("expected marked mention");
+        assert!(
+            mention
+                .marks
+                .iter()
+                .any(|(_, mark)| mark.bold && mark.highlight.is_some())
+        );
+        let command = paragraph
+            .children
+            .iter()
+            .find(|child| child.text.as_ref() == "/help")
+            .expect("expected marked command");
+        assert!(
+            command
+                .marks
+                .iter()
+                .any(|(_, mark)| mark.italic && mark.highlight.is_some())
         );
     }
 
