@@ -9,8 +9,8 @@ use crate::{
         document::ParsedDocument,
         markdown_ext::MarkdownParseContext,
         node::{
-            self, BlockNode, CodeBlock, ImageNode, InlineNode, LinkMark, NodeContext, Paragraph,
-            Span, Table, TableRow, TextMark,
+            self, BlockNode, CodeBlock, ImageNode, InlineNode, LinkMark, MathNode, NodeContext,
+            Paragraph, Span, Table, TableRow, TextMark,
         },
     },
 };
@@ -104,18 +104,8 @@ fn merge_children_with_mark(
         let child_text = parse_paragraph(&mut child_paragraph, child, cx);
         text.push_str(&child_text);
 
-        for node in child_paragraph.children {
-            let merged_offset = merged_text.len();
-            merged_text.push_str(&node.text);
-
-            for (range, child_mark) in node.marks {
-                merged_marks.push((
-                    range.start + merged_offset..range.end + merged_offset,
-                    child_mark,
-                ));
-            }
-
-            if let Some(mut image) = node.image {
+        for mut node in child_paragraph.children {
+            if let Some(mut image) = node.image.take() {
                 if let Some(link_mark) = mark.link.clone() {
                     image.link = Some(link_mark);
                 }
@@ -130,6 +120,34 @@ fn merge_children_with_mark(
                     mark.clone(),
                 );
                 paragraph.push(InlineNode::image(image));
+            } else if node.math.is_some() {
+                // Math must remain a distinct inline child so a renderer can
+                // replace it later without reparsing the Markdown.
+                push_merged(
+                    paragraph,
+                    std::mem::take(&mut merged_text),
+                    std::mem::take(&mut merged_marks),
+                    mark.clone(),
+                );
+                let len = node.text.len();
+                if let Some((range, child_mark)) = node.marks.last_mut()
+                    && range.start == 0
+                    && range.end == len
+                {
+                    child_mark.merge(mark.clone());
+                } else {
+                    node.marks.push((0..len, mark.clone()));
+                }
+                paragraph.push(node);
+            } else {
+                let merged_offset = merged_text.len();
+                merged_text.push_str(&node.text);
+                for (range, child_mark) in node.marks {
+                    merged_marks.push((
+                        range.start + merged_offset..range.end + merged_offset,
+                        child_mark,
+                    ));
+                }
             }
         }
     }
@@ -237,9 +255,7 @@ fn parse_paragraph(paragraph: &mut Paragraph, node: &mdast::Node, cx: &mut NodeC
         }
         Node::InlineMath(raw) => {
             text = raw.value.clone();
-            paragraph.push(
-                InlineNode::new(&text).marks(vec![(0..text.len(), TextMark::default().code())]),
-            );
+            paragraph.push(InlineNode::math(text.clone()));
         }
         Node::MdxTextExpression(raw) => {
             text = raw.value.clone();
@@ -413,9 +429,8 @@ fn ast_to_node(
                 span: new_span(val.position, cx),
             }
         }
-        Node::Math(val) => BlockNode::CodeBlock(CodeBlock::new(
+        Node::Math(val) => BlockNode::Math(MathNode::new(
             val.value.into(),
-            None,
             highlight_theme,
             new_span(val.position, cx),
         )),
@@ -562,6 +577,43 @@ mod tests {
                 .iter()
                 .any(|(_, mark)| mark.bold && mark.italic),
             "nested emphasis should produce a bold and italic mark"
+        );
+    }
+
+    #[test]
+    fn math_nodes_remain_distinct_without_changing_ordinary_markdown() {
+        let mut cx = NodeContext::default();
+        let document = parse(
+            "Normal **bold** and $x + y$.\n\n$$\nz^2\n$$\n\nAfter.",
+            &mut cx,
+            &HighlightTheme::default_light(),
+        )
+        .unwrap();
+
+        let BlockNode::Paragraph(paragraph) = &document.blocks[0] else {
+            panic!("expected paragraph");
+        };
+        let inline_math = paragraph
+            .children
+            .iter()
+            .find(|child| child.math.as_deref() == Some("x + y"))
+            .expect("expected distinct inline math node");
+        assert!(inline_math.marks.iter().any(|(_, mark)| mark.code));
+        assert!(
+            paragraph
+                .children
+                .iter()
+                .any(|child| child.marks.iter().any(|(_, mark)| mark.bold))
+        );
+
+        let BlockNode::Math(display_math) = &document.blocks[1] else {
+            panic!("expected distinct display math node");
+        };
+        assert_eq!(display_math.expression(), "z^2");
+        assert!(matches!(document.blocks[2], BlockNode::Paragraph(_)));
+        assert_eq!(
+            document.to_markdown(),
+            "Normal **bold** and $x + y$.\n\n$$\nz^2\n$$\n\nAfter."
         );
     }
 

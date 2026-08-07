@@ -19,6 +19,10 @@ use crate::{global_state::GlobalState, text::TextViewStyle};
 pub(crate) type CodeBlockActionsFn =
     dyn Fn(&CodeBlock, &mut Window, &mut App) -> AnyElement + Send + Sync;
 
+/// Type for Markdown math renderer functions.
+pub(crate) type MathRendererFn =
+    dyn Fn(&str, bool, &TextViewStyle, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
 /// A text view that can render Markdown or HTML.
 ///
 /// ## Goals
@@ -46,6 +50,7 @@ pub struct TextView {
     selectable: bool,
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    math_renderer: Option<Arc<MathRendererFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -85,6 +90,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            math_renderer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -101,6 +107,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            math_renderer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -117,6 +124,7 @@ impl TextView {
             selectable: false,
             scrollable: false,
             code_block_actions: None,
+            math_renderer: None,
             markdown_extensions: Arc::default(),
         }
     }
@@ -161,6 +169,23 @@ impl TextView {
     {
         self.code_block_actions = Some(Arc::new(move |code_block, window, cx| {
             f(&code_block, window, cx).into_any_element()
+        }));
+        self
+    }
+
+    /// Set a renderer for inline and display Markdown math.
+    ///
+    /// The closure receives the math expression, whether it is inline, the
+    /// current [`TextViewStyle`], and the GPUI window/application contexts.
+    /// Without a renderer, inline math keeps the inline-code fallback and
+    /// display math keeps the code-block fallback.
+    pub fn math_renderer<F, E>(mut self, renderer: F) -> Self
+    where
+        F: Fn(&str, bool, &TextViewStyle, &mut Window, &mut App) -> E + Send + Sync + 'static,
+        E: IntoElement,
+    {
+        self.math_renderer = Some(Arc::new(move |expression, inline, style, window, cx| {
+            renderer(expression, inline, style, window, cx).into_any_element()
         }));
         self
     }
@@ -278,6 +303,7 @@ impl Element for TextView {
 
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
+            state.math_renderer = self.math_renderer.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;
@@ -356,7 +382,7 @@ impl Element for TextView {
 #[cfg(test)]
 mod tests {
     use super::{TextView, TextViewPlugin};
-    use crate::text::TextViewState;
+    use crate::text::{TextViewState, TextViewStyle};
     use gpui::{
         AppContext as _, Context, Entity, IntoElement, Modifiers, MouseButton, MouseDownEvent,
         MouseUpEvent, ParentElement as _, Render, Styled as _, TestAppContext, VisualTestContext,
@@ -398,6 +424,80 @@ mod tests {
         }
     }
 
+    use std::sync::{Arc, Mutex};
+
+    type MathCall = (String, bool, gpui::Pixels);
+
+    struct MathRendererTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+        calls: Arc<Mutex<Vec<MathCall>>>,
+    }
+
+    impl MathRendererTextViewTestRoot {
+        fn new(text: &str, calls: Arc<Mutex<Vec<MathCall>>>, cx: &mut Context<Self>) -> Self {
+            let text = text.to_string();
+            let text_view = cx.new(|cx| TextViewState::markdown(&text, cx));
+            Self { text_view, calls }
+        }
+    }
+
+    impl Render for MathRendererTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let calls = self.calls.clone();
+            let mut style = TextViewStyle::default();
+            style.heading_base_font_size = px(19.);
+
+            div().w(px(420.)).child(
+                TextView::new(&self.text_view)
+                    .selectable(true)
+                    .style(style)
+                    .math_renderer(move |expression, inline, style, _window, _cx| {
+                        calls.lock().unwrap().push((
+                            expression.to_string(),
+                            inline,
+                            style.heading_base_font_size,
+                        ));
+                        if inline {
+                            div().w(px(30.)).h(px(14.))
+                        } else {
+                            div().w_full().h(px(28.))
+                        }
+                    }),
+            )
+        }
+    }
+
+    struct MathFallbackTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+        code_blocks: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MathFallbackTextViewTestRoot {
+        fn new(code_blocks: Arc<Mutex<Vec<String>>>, cx: &mut Context<Self>) -> Self {
+            let text_view =
+                cx.new(|cx| TextViewState::markdown("Before $x$ after.\n\n$$\ny\n$$", cx));
+            Self {
+                text_view,
+                code_blocks,
+            }
+        }
+    }
+
+    impl Render for MathFallbackTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let code_blocks = self.code_blocks.clone();
+            TextView::new(&self.text_view)
+                .selectable(true)
+                .code_block_actions(move |code_block, _window, _cx| {
+                    code_blocks
+                        .lock()
+                        .unwrap()
+                        .push(code_block.code().to_string());
+                    div()
+                })
+        }
+    }
+
     struct InlineImageTextViewTestRoot {
         text_view: Entity<TextViewState>,
     }
@@ -420,6 +520,118 @@ mod tests {
                 .w(px(420.))
                 .child(TextView::new(&self.text_view).selectable(true))
         }
+    }
+
+    #[gpui::test]
+    fn math_renderer_handles_inline_and_display_math(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_root = calls.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|cx| {
+                MathRendererTextViewTestRoot::new(
+                    "Before $x$ after.\n\n$$\ny\n$$",
+                    calls_for_root,
+                    cx,
+                )
+            });
+            crate::Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let calls = calls.lock().unwrap().clone();
+        assert!(calls.contains(&("x".to_string(), true, px(19.))));
+        assert!(calls.contains(&("y".to_string(), false, px(19.))));
+
+        let inline_bounds = cx.update(|window, cx| {
+            crate::Root::read(window, cx)
+                .selectable_text_inlines
+                .values()
+                .next()
+                .cloned()
+                .unwrap_or_default()
+        });
+        assert_eq!(inline_bounds.len(), 2);
+        assert_eq!(inline_bounds[0].top(), inline_bounds[1].top());
+        let math_width = inline_bounds[1].left() - inline_bounds[0].right();
+        assert!(
+            math_width >= px(29.) && math_width <= px(31.),
+            "inline math should reserve its measured width, got {math_width:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn math_renderer_is_used_after_incremental_update(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls_for_root = calls.clone();
+        let (view, cx) =
+            cx.add_window_view(|_, cx| MathRendererTextViewTestRoot::new("", calls_for_root, cx));
+        let cx: &mut VisualTestContext = cx;
+
+        let text_view = view.read_with(cx, |root, _| root.text_view.clone());
+        text_view.update(cx, |state, cx| {
+            state.push_str("Before $x$ after.\n\n", cx);
+            state.push_str("$$\ny\n$$", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        let calls = calls.lock().unwrap().clone();
+        assert!(calls.iter().any(|call| call.0 == "x" && call.1));
+        assert!(calls.iter().any(|call| call.0 == "y" && !call.1));
+        text_view.read_with(cx, |state, _| {
+            assert_eq!(state.source().as_ref(), "Before $x$ after.\n\n$$\ny\n$$");
+        });
+    }
+
+    #[gpui::test]
+    fn math_without_renderer_uses_legacy_fallbacks(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let code_blocks = Arc::new(Mutex::new(Vec::new()));
+        let code_blocks_for_root = code_blocks.clone();
+        let (view, cx) =
+            cx.add_window_view(|_, cx| MathFallbackTextViewTestRoot::new(code_blocks_for_root, cx));
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+
+        assert!(code_blocks.lock().unwrap().iter().any(|code| code == "y"));
+        view.read_with(cx, |root, cx| {
+            let state = root.text_view.read(cx);
+            let crate::text::node::BlockNode::Paragraph(paragraph) =
+                &state.parsed_content.document.blocks[0]
+            else {
+                panic!("expected paragraph");
+            };
+            let inline_math = paragraph
+                .children
+                .iter()
+                .find(|child| child.math.as_deref() == Some("x"))
+                .expect("expected inline math");
+            assert!(inline_math.marks.iter().any(|(_, mark)| mark.code));
+            assert!(matches!(
+                state.parsed_content.document.blocks[1],
+                crate::text::node::BlockNode::Math(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn cloned_text_view_keeps_math_renderer() {
+        let view = TextView::markdown("math-clone", "$x$").math_renderer(|_, _, _, _, _| div());
+
+        assert!(view.clone().math_renderer.is_some());
     }
 
     #[gpui::test]
@@ -460,7 +672,7 @@ mod tests {
             "unloaded inline image fallback should stay generic and compact"
         );
     }
-  
+
     #[test]
     fn plugin_accepts_text_view_plugins_beyond_markdown() {
         let view = TextView::markdown("plugin-test", "").plugin(DummyTextViewPlugin);

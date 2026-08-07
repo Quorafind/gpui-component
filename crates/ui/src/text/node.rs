@@ -20,7 +20,7 @@ use crate::{
     input::{InputEdit, Point, RopeExt as _},
     scroll::horizontal_scroll_area,
     text::{
-        CodeBlockActionsFn, MarkdownExtensions, MarkdownNode,
+        CodeBlockActionsFn, MarkdownExtensions, MarkdownNode, MathRendererFn,
         document::NodeRenderOptions,
         inline::{Inline, InlineState},
         inline_flow::{InlineFlow, InlineFlowItem},
@@ -68,6 +68,8 @@ pub(crate) enum BlockNode {
         span: Option<Span>,
     },
     CodeBlock(CodeBlock),
+    /// Display math preserved independently from fenced code blocks.
+    Math(MathNode),
     /// A custom Markdown node produced by [`MarkdownExtensions`].
     Custom(MarkdownNode),
     Table(Table),
@@ -117,6 +119,7 @@ impl BlockNode {
             BlockNode::List { span, .. } => *span,
             BlockNode::ListItem { span, .. } => *span,
             BlockNode::CodeBlock(code_block) => code_block.span,
+            BlockNode::Math(math) => math.span,
             BlockNode::Custom(el) => el.span,
             BlockNode::Table(table) => table.span,
             BlockNode::Break { span, .. } => *span,
@@ -206,6 +209,16 @@ impl BlockNode {
                     text.push('\n');
                 }
             }
+            BlockNode::Math(math) => {
+                let block_text = match kind {
+                    BlockTextKind::All => math.text(),
+                    BlockTextKind::Selected => math.selected_text(),
+                };
+                if !block_text.is_empty() {
+                    text.push_str(&block_text);
+                    text.push('\n');
+                }
+            }
             BlockNode::Custom(node) => {
                 if let BlockTextKind::All = kind {
                     let content = node.as_text();
@@ -257,6 +270,7 @@ impl BlockNode {
                 }
             }
             BlockNode::CodeBlock(code_block) => code_block.clear_selection(),
+            BlockNode::Math(math) => math.clear_selection(),
             BlockNode::Custom { .. }
             | BlockNode::Definition { .. }
             | BlockNode::Break { .. }
@@ -390,6 +404,8 @@ pub(crate) struct InlineNode {
     /// The text content.
     pub(crate) text: SharedString,
     pub(crate) image: Option<ImageNode>,
+    /// Present when this inline node originated from Markdown inline math.
+    pub(crate) math: Option<SharedString>,
     /// The text styles, each tuple contains the range of the text and the style.
     pub(crate) marks: Vec<(Range<usize>, TextMark)>,
 
@@ -398,7 +414,10 @@ pub(crate) struct InlineNode {
 
 impl PartialEq for InlineNode {
     fn eq(&self, other: &Self) -> bool {
-        self.text == other.text && self.image == other.image && self.marks == other.marks
+        self.text == other.text
+            && self.image == other.image
+            && self.math == other.math
+            && self.marks == other.marks
     }
 }
 
@@ -407,6 +426,7 @@ impl InlineNode {
         Self {
             text: text.into(),
             image: None,
+            math: None,
             marks: vec![],
             state: Arc::new(Mutex::new(InlineState::default())),
         }
@@ -416,6 +436,18 @@ impl InlineNode {
         let mut this = Self::new("");
         this.image = Some(image);
         this
+    }
+
+    pub(crate) fn math(expression: impl Into<SharedString>) -> Self {
+        let expression = expression.into();
+        let len = expression.len();
+        Self {
+            text: expression.clone(),
+            image: None,
+            math: Some(expression),
+            marks: vec![(0..len, TextMark::default().code())],
+            state: Arc::new(Mutex::new(InlineState::default())),
+        }
     }
 
     pub(crate) fn marks(mut self, marks: Vec<(Range<usize>, TextMark)>) -> Self {
@@ -586,7 +618,7 @@ impl Paragraph {
             || self
                 .children
                 .iter()
-                .all(|node| node.text.is_empty() && node.image.is_none())
+                .all(|node| node.text.is_empty() && node.image.is_none() && node.math.is_none())
     }
 
     /// Return length of children text.
@@ -767,6 +799,76 @@ impl CodeBlock {
     }
 }
 
+/// Display-math node with the legacy code-block representation retained as a
+/// rendering fallback.
+#[derive(Debug, Clone)]
+pub(crate) struct MathNode {
+    expression: SharedString,
+    fallback: CodeBlock,
+    pub(crate) span: Option<Span>,
+}
+
+impl PartialEq for MathNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.expression == other.expression && self.span == other.span
+    }
+}
+
+impl MathNode {
+    pub(crate) fn new(
+        expression: SharedString,
+        highlight_theme: &HighlightTheme,
+        span: Option<Span>,
+    ) -> Self {
+        Self {
+            fallback: CodeBlock::new(expression.clone(), None, highlight_theme, span),
+            expression,
+            span,
+        }
+    }
+
+    pub(crate) fn expression(&self) -> &str {
+        self.expression.as_ref()
+    }
+
+    fn text(&self) -> String {
+        self.expression.to_string()
+    }
+
+    fn selected_text(&self) -> String {
+        self.fallback.selected_text()
+    }
+
+    fn clear_selection(&self) {
+        self.fallback.clear_selection();
+    }
+
+    fn render(
+        &self,
+        options: &NodeRenderOptions,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let Some(renderer) = node_cx.math_renderer.as_ref() else {
+            return self.fallback.render(options, node_cx, window, cx);
+        };
+
+        div()
+            .when(!options.is_last, |this| {
+                this.pb(node_cx.style.paragraph_gap)
+            })
+            .child(renderer(
+                self.expression(),
+                false,
+                &node_cx.style,
+                window,
+                cx,
+            ))
+            .into_any_element()
+    }
+}
+
 /// A context for rendering nodes, contains link references.
 #[derive(Default, Clone)]
 pub(crate) struct NodeContext {
@@ -776,6 +878,7 @@ pub(crate) struct NodeContext {
     pub(crate) link_refs: HashMap<SharedString, LinkMark>,
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
+    pub(crate) math_renderer: Option<Arc<MathRendererFn>>,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -788,20 +891,20 @@ impl NodeContext {
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
         self.link_refs == other.link_refs && self.style == other.style
-        // Note: code_block_actions and markdown_extensions are intentionally
-        // not compared (closures can't be compared)
+        // Note: code_block_actions, math_renderer, and markdown_extensions are
+        // intentionally not compared (closures can't be compared)
     }
 }
 
 impl Paragraph {
-    fn render(&self, node_cx: &NodeContext, _window: &mut Window, cx: &mut App) -> AnyElement {
+    fn render(&self, node_cx: &NodeContext, window: &mut Window, cx: &mut App) -> AnyElement {
         let span = self.span;
         let children = &self.children;
 
-        if self.should_render_inline_flow() {
+        if self.should_render_inline_flow(node_cx) {
             return InlineFlow::new(
                 span.unwrap_or_default(),
-                self.inline_flow_items(node_cx, cx),
+                self.inline_flow_items(node_cx, window, cx),
             )
             .into_any_element();
         }
@@ -930,36 +1033,57 @@ impl Paragraph {
             .into_any_element()
     }
 
-    fn should_render_inline_flow(&self) -> bool {
+    fn should_render_inline_flow(&self, node_cx: &NodeContext) -> bool {
         let has_image = self.children.iter().any(|child| child.image.is_some());
         let has_text = self.children.iter().any(|child| !child.text.is_empty());
-        has_image && has_text
+        let has_rendered_math = node_cx.math_renderer.is_some()
+            && self.children.iter().any(|child| child.math.is_some());
+        (has_image && has_text) || has_rendered_math
     }
 
-    fn inline_flow_items(&self, node_cx: &NodeContext, cx: &mut App) -> Vec<InlineFlowItem> {
+    fn inline_flow_items(
+        &self,
+        node_cx: &NodeContext,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Vec<InlineFlowItem> {
         let mut items = Vec::new();
         let mut text = String::new();
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
         let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
         let mut offset = 0;
 
-        for inline_node in &self.children {
-            let text_len = inline_node.text.len();
-            text.push_str(&inline_node.text);
-
-            if let Some(image) = &inline_node.image {
-                if !text.is_empty() {
-                    if let Ok(mut state) = inline_node.state.lock() {
-                        state.set_text(text.clone().into());
-                    }
-                    items.push(InlineFlowItem::Text {
-                        state: inline_node.state.clone(),
-                        text: text.clone().into(),
-                        links: links.clone(),
-                        highlights: highlights.clone(),
-                    });
+        let flush_text =
+            |items: &mut Vec<InlineFlowItem>,
+             state: &Arc<Mutex<InlineState>>,
+             text: &mut String,
+             links: &mut Vec<(Range<usize>, LinkMark)>,
+             highlights: &mut Vec<(Range<usize>, HighlightStyle)>| {
+                if text.is_empty() {
+                    return;
                 }
 
+                let text = std::mem::take(text);
+                if let Ok(mut state) = state.lock() {
+                    state.set_text(text.clone().into());
+                }
+                items.push(InlineFlowItem::Text {
+                    state: state.clone(),
+                    text: text.into(),
+                    links: std::mem::take(links),
+                    highlights: std::mem::take(highlights),
+                });
+            };
+
+        for inline_node in &self.children {
+            if let Some(image) = &inline_node.image {
+                flush_text(
+                    &mut items,
+                    &inline_node.state,
+                    &mut text,
+                    &mut links,
+                    &mut highlights,
+                );
                 items.push(InlineFlowItem::Image {
                     url: image.url.clone(),
                     link: image.link.clone(),
@@ -967,78 +1091,96 @@ impl Paragraph {
                     width: image.width,
                     height: image.height,
                 });
-
-                text.clear();
-                links.clear();
-                highlights.clear();
                 offset = 0;
-            } else {
-                let mut node_highlights = vec![];
-                for (range, style) in &inline_node.marks {
-                    let inner_range = (offset + range.start)..(offset + range.end);
+                continue;
+            }
 
-                    let mut highlight = HighlightStyle::default();
-                    if style.bold {
-                        highlight.font_weight = Some(FontWeight::BOLD);
-                    }
-                    if style.italic {
-                        highlight.font_style = Some(FontStyle::Italic);
-                    }
-                    if style.strikethrough {
-                        highlight.strikethrough = Some(gpui::StrikethroughStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.underline {
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
-                    }
-                    if style.code {
-                        highlight.background_color = Some(cx.theme().accent);
-                    }
-                    if let Some(color) = style.highlight {
-                        highlight.background_color = Some(color);
-                    }
+            if let (Some(expression), Some(renderer)) =
+                (&inline_node.math, node_cx.math_renderer.as_ref())
+            {
+                flush_text(
+                    &mut items,
+                    &inline_node.state,
+                    &mut text,
+                    &mut links,
+                    &mut highlights,
+                );
+                if let Ok(mut state) = inline_node.state.lock() {
+                    state.selection = None;
+                }
+                items.push(InlineFlowItem::Element(renderer(
+                    expression.as_ref(),
+                    true,
+                    &node_cx.style,
+                    window,
+                    cx,
+                )));
+                offset = 0;
+                continue;
+            }
 
-                    if let Some(mut link_mark) = style.link.clone() {
-                        highlight.color = Some(cx.theme().link);
-                        highlight.underline = Some(gpui::UnderlineStyle {
-                            thickness: gpui::px(1.),
-                            ..Default::default()
-                        });
+            let text_len = inline_node.text.len();
+            text.push_str(&inline_node.text);
+            let mut node_highlights = vec![];
+            for (range, style) in &inline_node.marks {
+                let inner_range = (offset + range.start)..(offset + range.end);
 
-                        if let Some(identifier) = link_mark.identifier.as_ref()
-                            && let Some(mark) = node_cx.link_refs.get(identifier)
-                        {
-                            link_mark = mark.clone();
-                        }
-
-                        links.push((inner_range.clone(), link_mark));
-                    }
-
-                    node_highlights.push((inner_range, highlight));
+                let mut highlight = HighlightStyle::default();
+                if style.bold {
+                    highlight.font_weight = Some(FontWeight::BOLD);
+                }
+                if style.italic {
+                    highlight.font_style = Some(FontStyle::Italic);
+                }
+                if style.strikethrough {
+                    highlight.strikethrough = Some(gpui::StrikethroughStyle {
+                        thickness: gpui::px(1.),
+                        ..Default::default()
+                    });
+                }
+                if style.underline {
+                    highlight.underline = Some(gpui::UnderlineStyle {
+                        thickness: gpui::px(1.),
+                        ..Default::default()
+                    });
+                }
+                if style.code {
+                    highlight.background_color = Some(cx.theme().accent);
+                }
+                if let Some(color) = style.highlight {
+                    highlight.background_color = Some(color);
                 }
 
-                highlights = gpui::combine_highlights(highlights, node_highlights).collect();
-                offset += text_len;
+                if let Some(mut link_mark) = style.link.clone() {
+                    highlight.color = Some(cx.theme().link);
+                    highlight.underline = Some(gpui::UnderlineStyle {
+                        thickness: gpui::px(1.),
+                        ..Default::default()
+                    });
+
+                    if let Some(identifier) = link_mark.identifier.as_ref()
+                        && let Some(mark) = node_cx.link_refs.get(identifier)
+                    {
+                        link_mark = mark.clone();
+                    }
+
+                    links.push((inner_range.clone(), link_mark));
+                }
+
+                node_highlights.push((inner_range, highlight));
             }
+
+            highlights = gpui::combine_highlights(highlights, node_highlights).collect();
+            offset += text_len;
         }
 
-        if !text.is_empty() {
-            if let Ok(mut state) = self.state.lock() {
-                state.set_text(text.clone().into());
-            }
-            items.push(InlineFlowItem::Text {
-                state: self.state.clone(),
-                text: text.into(),
-                links,
-                highlights,
-            });
-        }
-
+        flush_text(
+            &mut items,
+            &self.state,
+            &mut text,
+            &mut links,
+            &mut highlights,
+        );
         items
     }
 }
@@ -1049,6 +1191,10 @@ impl Paragraph {
             .children
             .iter()
             .map(|text_node| {
+                if let Some(expression) = &text_node.math {
+                    return format!("${expression}$");
+                }
+
                 let mut text = text_node.text.to_string();
                 for (range, style) in &text_node.marks {
                     if style.bold {
@@ -1162,6 +1308,7 @@ impl BlockNode {
                     code_block.code()
                 )
             }
+            BlockNode::Math(math) => format!("$$\n{}\n$$", math.expression()),
             BlockNode::Table(table) => {
                 let header = table
                     .children
@@ -1709,6 +1856,7 @@ impl BlockNode {
                 })
                 .into_any_element(),
             BlockNode::CodeBlock(code_block) => code_block.render(&options, node_cx, window, cx),
+            BlockNode::Math(math) => math.render(&options, node_cx, window, cx),
             BlockNode::Custom(node) => {
                 let inner = match node_cx.markdown_extensions.render_block(node, window, cx) {
                     Some(rendered) => rendered,

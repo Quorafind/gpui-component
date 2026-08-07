@@ -39,6 +39,8 @@ pub(super) enum InlineFlowItem {
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
     },
+    /// An arbitrary inline element, such as a rendered math expression.
+    Element(AnyElement),
 }
 
 #[derive(Default)]
@@ -68,6 +70,10 @@ enum PositionedFragment {
         origin: gpui::Point<Pixels>,
         size: Size<Pixels>,
     },
+    Element {
+        item_ix: usize,
+        origin: gpui::Point<Pixels>,
+    },
 }
 
 enum MeasureItem {
@@ -80,6 +86,9 @@ enum MeasureItem {
         url: SharedUri,
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
+    },
+    Element {
+        size: Size<Pixels>,
     },
 }
 
@@ -97,6 +106,7 @@ enum LineFragmentKind {
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image,
+    Element,
 }
 
 impl InlineFlow {
@@ -134,6 +144,11 @@ impl InlineFlow {
     }
 }
 
+pub(crate) enum InlineFlowPaintItem {
+    Generated(AnyElement),
+    Embedded(usize),
+}
+
 impl IntoElement for InlineFlow {
     type Element = Self;
 
@@ -144,7 +159,7 @@ impl IntoElement for InlineFlow {
 
 impl Element for InlineFlow {
     type RequestLayoutState = InlineFlowLayoutState;
-    type PrepaintState = Vec<AnyElement>;
+    type PrepaintState = Vec<InlineFlowPaintItem>;
 
     fn id(&self) -> Option<ElementId> {
         Some(self.id.clone())
@@ -161,7 +176,22 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let measure_items = self.items.iter().map(MeasureItem::from).collect::<Vec<_>>();
+        let element_sizes = self
+            .items
+            .iter_mut()
+            .map(|item| match item {
+                InlineFlowItem::Element(element) => {
+                    Some(element.layout_as_root(AvailableSpace::min_size(), window, cx))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let measure_items = self
+            .items
+            .iter()
+            .zip(&element_sizes)
+            .map(|(item, size)| MeasureItem::from_item(item, *size))
+            .collect::<Vec<_>>();
         let line_height = window.line_height();
         let rem_size = window.rem_size();
         let image_sizes = measure_items
@@ -178,6 +208,7 @@ impl Element for InlineFlow {
                     window,
                     cx,
                 )),
+                MeasureItem::Element { size } => Some(*size),
                 MeasureItem::Text { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -265,7 +296,7 @@ impl Element for InlineFlow {
                         window,
                         cx,
                     );
-                    elements.push(element);
+                    elements.push(InlineFlowPaintItem::Generated(element));
                 }
                 PositionedFragment::Image {
                     item_ix,
@@ -294,7 +325,14 @@ impl Element for InlineFlow {
                         window,
                         cx,
                     );
-                    elements.push(element);
+                    elements.push(InlineFlowPaintItem::Generated(element));
+                }
+                PositionedFragment::Element { item_ix, origin } => {
+                    let Some(InlineFlowItem::Element(element)) = self.items.get_mut(item_ix) else {
+                        continue;
+                    };
+                    element.prepaint_at(bounds.origin + origin, window, cx);
+                    elements.push(InlineFlowPaintItem::Embedded(item_ix));
                 }
             }
         }
@@ -312,14 +350,21 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) {
-        for element in prepaint {
-            element.paint(window, cx);
+        for item in prepaint {
+            match item {
+                InlineFlowPaintItem::Generated(element) => element.paint(window, cx),
+                InlineFlowPaintItem::Embedded(item_ix) => {
+                    if let Some(InlineFlowItem::Element(element)) = self.items.get_mut(*item_ix) {
+                        element.paint(window, cx);
+                    }
+                }
+            }
         }
     }
 }
 
-impl From<&InlineFlowItem> for MeasureItem {
-    fn from(item: &InlineFlowItem) -> Self {
+impl MeasureItem {
+    fn from_item(item: &InlineFlowItem, element_size: Option<Size<Pixels>>) -> Self {
         match item {
             InlineFlowItem::Text {
                 state: _,
@@ -339,15 +384,16 @@ impl From<&InlineFlowItem> for MeasureItem {
                 width: *width,
                 height: *height,
             },
+            InlineFlowItem::Element(_) => MeasureItem::Element {
+                size: element_size.expect("inline element should be measured before layout"),
+            },
         }
     }
-}
 
-impl MeasureItem {
     fn len(&self) -> usize {
         match self {
             MeasureItem::Text { text, .. } => text.len(),
-            MeasureItem::Image { .. } => IMAGE_LEN,
+            MeasureItem::Image { .. } | MeasureItem::Element { .. } => IMAGE_LEN,
         }
     }
 }
@@ -421,15 +467,19 @@ fn layout_flow(
                         });
                     }
                 }
-                MeasureItem::Image { .. } => {
+                MeasureItem::Image { .. } | MeasureItem::Element { .. } => {
                     if line_range.start <= item_start && item_end <= line_range.end {
                         let size = image_sizes[item_ix]
-                            .expect("image size should be measured before layout");
+                            .expect("inline element size should be measured before layout");
                         line_width += size.width;
                         actual_line_height = actual_line_height.max(size.height);
                         line_fragments.push(LineFragmentLayout {
                             item_ix,
-                            kind: LineFragmentKind::Image,
+                            kind: if matches!(item, MeasureItem::Image { .. }) {
+                                LineFragmentKind::Image
+                            } else {
+                                LineFragmentKind::Element
+                            },
                             size,
                             source_range: 0..IMAGE_LEN,
                         });
@@ -461,6 +511,10 @@ fn layout_flow(
                     item_ix: fragment.item_ix,
                     origin,
                     size: fragment.size,
+                },
+                LineFragmentKind::Element => PositionedFragment::Element {
+                    item_ix: fragment.item_ix,
+                    origin,
                 },
             };
             x += fragment.size.width;
@@ -495,9 +549,9 @@ fn line_ranges(
         .enumerate()
         .map(|(ix, item)| match item {
             MeasureItem::Text { text, .. } => WrapLineFragment::text(text),
-            MeasureItem::Image { .. } => WrapLineFragment::element(
+            MeasureItem::Image { .. } | MeasureItem::Element { .. } => WrapLineFragment::element(
                 image_sizes[ix]
-                    .expect("image size should be measured before wrapping")
+                    .expect("inline element size should be measured before wrapping")
                     .width,
                 IMAGE_LEN,
             ),
