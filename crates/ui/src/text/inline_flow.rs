@@ -287,10 +287,16 @@ impl Element for InlineFlow {
 
                     let mut element =
                         Inline::new(elements.len(), state, links, highlights).into_any_element();
+                    // Fragments are already line-broken by `layout_flow`; paint
+                    // with unbounded width so the text can never re-wrap. Handing
+                    // it exactly its measured width lets any sub-pixel shaping
+                    // difference push the last glyph onto a phantom second line
+                    // that overlaps the block below (CJK breaks between every
+                    // character, so a single hanzi silently drops down).
                     element.prepaint_as_root(
                         bounds.origin + origin,
                         size(
-                            AvailableSpace::Definite(fragment_size.width),
+                            AvailableSpace::MaxContent,
                             AvailableSpace::Definite(fragment_size.height),
                         ),
                         window,
