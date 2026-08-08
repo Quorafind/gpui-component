@@ -192,6 +192,14 @@ impl Element for InlineFlow {
             .zip(&element_sizes)
             .map(|(item, size)| MeasureItem::from_item(item, *size))
             .collect::<Vec<_>>();
+        // Resolve the text style and metrics here, while the ancestors' style
+        // refinements are still on the window's stacks. The measure closure
+        // below runs inside taffy's compute pass, where the stack is unwound
+        // to the layout root: `window.text_style()` there returns the ambient
+        // style, and fragment widths measured with the wrong font drift from
+        // what `Inline` later paints — enough for a following inline element
+        // (e.g. rendered math) to overlap the text.
+        let text_style = window.text_style();
         let line_height = window.line_height();
         let rem_size = window.rem_size();
         let image_sizes = measure_items
@@ -217,7 +225,6 @@ impl Element for InlineFlow {
 
         let layout_id = window.request_measured_layout(Default::default(), {
             move |known_dimensions, available_space, window, _cx| {
-                let text_style = window.text_style();
                 let wrap_width = if text_style.white_space == WhiteSpace::Normal {
                     known_dimensions.width.or(match available_space.width {
                         AvailableSpace::Definite(width) => Some(width),
@@ -231,6 +238,8 @@ impl Element for InlineFlow {
                     &image_sizes,
                     &text_style,
                     wrap_width,
+                    line_height,
+                    rem_size,
                     window,
                 );
                 let size = layout.size;
@@ -409,16 +418,16 @@ fn layout_flow(
     image_sizes: &[Option<Size<Pixels>>],
     text_style: &TextStyle,
     wrap_width: Option<Pixels>,
+    line_height: Pixels,
+    rem_size: Pixels,
     window: &mut Window,
 ) -> InlineFlowLayout {
-    let line_height = window.line_height();
-    let rem_size = window.rem_size();
     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
     if total_len == 0 {
         return InlineFlowLayout::default();
     }
 
-    let line_ranges = line_ranges(items, image_sizes, text_style, wrap_width, window);
+    let line_ranges = line_ranges(items, image_sizes, text_style, wrap_width, rem_size, window);
     let font_size = text_style.font_size.to_pixels(rem_size);
     let mut fragments = Vec::new();
     let mut max_width = Pixels::ZERO;
@@ -542,13 +551,13 @@ fn line_ranges(
     image_sizes: &[Option<Size<Pixels>>],
     text_style: &TextStyle,
     wrap_width: Option<Pixels>,
+    rem_size: Pixels,
     window: &mut Window,
 ) -> Vec<Range<usize>> {
     let total_len = items.iter().map(MeasureItem::len).sum::<usize>();
     let Some(wrap_width) = wrap_width else {
         return std::iter::once(0..total_len).collect();
     };
-    let rem_size = window.rem_size();
 
     let wrap_fragments = items
         .iter()
