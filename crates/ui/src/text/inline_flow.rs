@@ -11,10 +11,10 @@ use gpui::{
     WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
-use crate::{WindowExt as _, tooltip::Tooltip};
+use crate::{WindowExt as _, text::TextViewLinkCallbacks, tooltip::Tooltip};
 
 use super::{
-    inline::{Inline, InlineState},
+    inline::{Inline, InlineLink, InlineState},
     node::LinkMark,
 };
 
@@ -23,13 +23,15 @@ const IMAGE_LEN: usize = 1;
 pub(super) struct InlineFlow {
     id: ElementId,
     items: Vec<InlineFlowItem>,
+    hover_state: Arc<Mutex<InlineState>>,
+    link_callbacks: TextViewLinkCallbacks,
 }
 
 pub(super) enum InlineFlowItem {
     Text {
         state: Arc<Mutex<InlineState>>,
         text: SharedString,
-        links: Vec<(Range<usize>, LinkMark)>,
+        links: Vec<(Range<usize>, InlineLink)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image {
@@ -62,7 +64,7 @@ enum PositionedFragment {
         size: Size<Pixels>,
         source_range: Range<usize>,
         text: SharedString,
-        links: Vec<(Range<usize>, LinkMark)>,
+        links: Vec<(Range<usize>, InlineLink)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image {
@@ -79,7 +81,7 @@ enum PositionedFragment {
 enum MeasureItem {
     Text {
         text: SharedString,
-        links: Vec<(Range<usize>, LinkMark)>,
+        links: Vec<(Range<usize>, InlineLink)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image {
@@ -102,7 +104,7 @@ struct LineFragmentLayout {
 enum LineFragmentKind {
     Text {
         text: SharedString,
-        links: Vec<(Range<usize>, LinkMark)>,
+        links: Vec<(Range<usize>, InlineLink)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     },
     Image,
@@ -110,10 +112,17 @@ enum LineFragmentKind {
 }
 
 impl InlineFlow {
-    pub(super) fn new(id: impl Into<ElementId>, items: Vec<InlineFlowItem>) -> Self {
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        items: Vec<InlineFlowItem>,
+        hover_state: Arc<Mutex<InlineState>>,
+        link_callbacks: TextViewLinkCallbacks,
+    ) -> Self {
         Self {
             id: id.into(),
             items,
+            hover_state,
+            link_callbacks,
         }
     }
 
@@ -294,8 +303,10 @@ impl Element for InlineFlow {
                         state.set_text(text);
                     }
 
-                    let mut element =
-                        Inline::new(elements.len(), state, links, highlights).into_any_element();
+                    let owner = elements.len();
+                    let mut element = Inline::new(owner, state, links, highlights)
+                        .link_events(owner, self.hover_state.clone(), self.link_callbacks.clone())
+                        .into_any_element();
                     // Fragments are already line-broken by `layout_flow`; paint
                     // with unbounded width so the text can never re-wrap. Handing
                     // it exactly its measured width lets any sub-pixel shaping

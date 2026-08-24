@@ -7,14 +7,18 @@ use std::{
 
 use gpui::{
     App, BorderStyle, Bounds, CursorStyle, Edges, Element, ElementId, GlobalElementId, Half,
-    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, StyledText,
-    TextLayout, Window, point, px, quad,
+    HighlightStyle, Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString,
+    StyledText, TextLayout, Window, point, px, quad,
 };
 
 use crate::{
-    ActiveTheme, WindowExt as _, global_state::GlobalState, input::Selection,
-    text::TextViewMultiClickKind, text::node::LinkMark, text::selection::word_range_at,
+    ActiveTheme, WindowExt as _,
+    global_state::GlobalState,
+    input::Selection,
+    text::node::LinkMark,
+    text::selection::word_range_at,
+    text::{TextViewLinkCallbacks, TextViewLinkEvent, TextViewMultiClickKind},
 };
 
 /// A inline element used to render a inline text and support selectable.
@@ -23,17 +27,33 @@ use crate::{
 pub(super) struct Inline {
     id: ElementId,
     text: SharedString,
-    links: Rc<Vec<(Range<usize>, LinkMark)>>,
+    links: Rc<Vec<(Range<usize>, InlineLink)>>,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     styled_text: StyledText,
 
     state: Arc<Mutex<InlineState>>,
+    hover_state: Arc<Mutex<InlineState>>,
+    hover_owner: usize,
+    link_callbacks: TextViewLinkCallbacks,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct InlineLink {
+    pub(super) identity: usize,
+    pub(super) mark: LinkMark,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HoveredLink {
+    identity: usize,
+    modifiers: Modifiers,
+    owner: usize,
 }
 
 /// The inline text state, used RefCell to keep the selection state.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct InlineState {
-    hovered_index: Option<usize>,
+    hovered_link: Option<HoveredLink>,
     /// The text that actually rendering, matched with selection.
     pub(super) text: SharedString,
     pub(super) selection: Option<Selection>,
@@ -44,13 +64,50 @@ impl InlineState {
     pub(crate) fn set_text(&mut self, text: SharedString) {
         self.text = text;
     }
+
+    fn update_hovered_link(
+        &mut self,
+        owner: usize,
+        link: Option<&InlineLink>,
+        position: Point<Pixels>,
+        modifiers: Modifiers,
+    ) -> Option<Option<TextViewLinkEvent>> {
+        match link {
+            Some(link) => {
+                let changed = self.hovered_link.is_none_or(|hovered| {
+                    hovered.identity != link.identity || hovered.modifiers != modifiers
+                });
+                self.hovered_link = Some(HoveredLink {
+                    identity: link.identity,
+                    modifiers,
+                    owner,
+                });
+                changed.then(|| {
+                    Some(TextViewLinkEvent {
+                        url: link.mark.url.clone(),
+                        title: link.mark.title.clone(),
+                        position,
+                        modifiers,
+                    })
+                })
+            }
+            None if self
+                .hovered_link
+                .is_some_and(|hovered| hovered.owner == owner) =>
+            {
+                self.hovered_link = None;
+                Some(None)
+            }
+            None => None,
+        }
+    }
 }
 
 impl Inline {
     pub(super) fn new(
         id: impl Into<ElementId>,
         state: Arc<Mutex<InlineState>>,
-        links: Vec<(Range<usize>, LinkMark)>,
+        links: Vec<(Range<usize>, InlineLink)>,
         highlights: Vec<(Range<usize>, HighlightStyle)>,
     ) -> Self {
         let text = state
@@ -64,20 +121,35 @@ impl Inline {
             highlights,
             text: text.clone(),
             styled_text: StyledText::new(text),
+            hover_state: state.clone(),
             state,
+            hover_owner: 0,
+            link_callbacks: TextViewLinkCallbacks::default(),
         }
     }
 
+    pub(super) fn link_events(
+        mut self,
+        hover_owner: usize,
+        hover_state: Arc<Mutex<InlineState>>,
+        link_callbacks: TextViewLinkCallbacks,
+    ) -> Self {
+        self.hover_owner = hover_owner;
+        self.hover_state = hover_state;
+        self.link_callbacks = link_callbacks;
+        self
+    }
+
     /// Get link at given mouse position.
-    fn link_for_position(
+    fn link_for_position<'a>(
         layout: &TextLayout,
-        links: &Vec<(Range<usize>, LinkMark)>,
+        links: &'a [(Range<usize>, InlineLink)],
         position: Point<Pixels>,
-    ) -> Option<LinkMark> {
+    ) -> Option<&'a InlineLink> {
         let offset = layout.index_for_position(position).ok()?;
-        for (range, link) in links.iter() {
+        for (range, link) in links {
             if range.contains(&offset) {
-                return Some(link.clone());
+                return Some(link);
             }
         }
 
@@ -464,18 +536,27 @@ impl Element for Inline {
         // mouse move, update hovered link
         window.on_mouse_event({
             let hitbox = hitbox.clone();
+            let links = self.links.clone();
             let text_layout = text_layout.clone();
-            let mut hovered_index = state.hovered_index;
+            let hover_state = self.hover_state.clone();
+            let hover_owner = self.hover_owner;
+            let on_link_hover = self.link_callbacks.hover.clone();
             move |event: &MouseMoveEvent, phase, window, cx| {
-                if !phase.bubble() || !hitbox.is_hovered(window) {
+                if !phase.bubble() {
                     return;
                 }
 
-                let current = hovered_index;
-                let updated = text_layout.index_for_position(event.position).ok();
-                //  notify update when hovering over different links
-                if current != updated {
-                    hovered_index = updated;
+                let link = hitbox
+                    .is_hovered(window)
+                    .then(|| Self::link_for_position(&text_layout, &links, event.position))
+                    .flatten();
+                let update = hover_state.lock().ok().and_then(|mut state| {
+                    state.update_hovered_link(hover_owner, link, event.position, event.modifiers)
+                });
+                if let Some(event) = update {
+                    if let Some(callback) = &on_link_hover {
+                        callback(event, window, cx);
+                    }
                     cx.notify(current_view);
                 }
             }
@@ -488,6 +569,7 @@ impl Element for Inline {
                 let text_layout = text_layout.clone();
                 let hitbox = hitbox.clone();
                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
+                let on_link_click = self.link_callbacks.click.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -505,7 +587,18 @@ impl Element for Inline {
                     {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        let event = TextViewLinkEvent {
+                            url: link.mark.url.clone(),
+                            title: link.mark.title.clone(),
+                            position: event.position,
+                            modifiers: event.modifiers,
+                        };
+                        let handled = on_link_click
+                            .as_ref()
+                            .is_some_and(|callback| callback(&event, window, cx));
+                        if !handled {
+                            cx.open_url(&event.url);
+                        }
                     }
                 }
             });
@@ -595,8 +688,53 @@ fn point_in_text_selection(
 
 #[cfg(test)]
 mod tests {
-    use super::{for_each_visual_line_width, point_in_text_selection};
-    use gpui::{point, px};
+    use super::{InlineLink, InlineState, for_each_visual_line_width, point_in_text_selection};
+    use crate::text::node::LinkMark;
+    use gpui::{Modifiers, point, px};
+
+    #[test]
+    fn hovered_link_state_deduplicates_position_but_tracks_modifiers_and_owner() {
+        let link = InlineLink {
+            identity: 7,
+            mark: LinkMark {
+                url: "https://example.com".into(),
+                title: Some("Example".into()),
+                ..Default::default()
+            },
+        };
+        let mut state = InlineState::default();
+        let position = point(px(10.), px(10.));
+        let modifiers = Modifiers::default();
+
+        assert!(matches!(
+            state.update_hovered_link(1, Some(&link), position, modifiers),
+            Some(Some(_))
+        ));
+        assert_eq!(
+            state.update_hovered_link(1, Some(&link), point(px(11.), px(10.)), modifiers),
+            None
+        );
+        assert_eq!(
+            state.update_hovered_link(2, Some(&link), point(px(12.), px(10.)), modifiers),
+            None
+        );
+        assert_eq!(
+            state.update_hovered_link(1, None, position, modifiers),
+            None
+        );
+
+        let mut modified = modifiers;
+        modified.control = true;
+        let update = state
+            .update_hovered_link(2, Some(&link), position, modified)
+            .expect("modifier change should notify")
+            .expect("link should remain hovered");
+        assert_eq!(update.modifiers, modified);
+        assert_eq!(
+            state.update_hovered_link(2, None, position, modified),
+            Some(None)
+        );
+    }
 
     #[test]
     fn test_visual_line_widths_follow_wrap_boundaries() {

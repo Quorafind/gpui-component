@@ -3,8 +3,8 @@ use std::sync::Arc;
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, Element, ElementId, Entity, GlobalElementId, Hitbox, HitboxBehavior,
-    InspectorElementId, InteractiveElement, IntoElement, LayoutId, ParentElement, Pixels,
-    SharedString, StyleRefinement, Styled, Window, div,
+    InspectorElementId, InteractiveElement, IntoElement, LayoutId, Modifiers, ParentElement,
+    Pixels, Point, SharedString, StyleRefinement, Styled, Window, div,
 };
 
 use crate::StyledExt;
@@ -22,6 +22,30 @@ pub(crate) type CodeBlockActionsFn =
 /// Type for Markdown math renderer functions.
 pub(crate) type MathRendererFn =
     dyn Fn(&str, bool, &TextViewStyle, &mut Window, &mut App) -> AnyElement + Send + Sync;
+
+/// A mouse event for a text link in a [`TextView`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextViewLinkEvent {
+    /// The link destination.
+    pub url: SharedString,
+    /// The optional link title.
+    pub title: Option<SharedString>,
+    /// The mouse position in window coordinates.
+    pub position: Point<Pixels>,
+    /// The keyboard modifiers active for the mouse event.
+    pub modifiers: Modifiers,
+}
+
+pub(crate) type TextViewLinkHoverFn =
+    dyn Fn(Option<TextViewLinkEvent>, &mut Window, &mut App) + Send + Sync;
+pub(crate) type TextViewLinkClickFn =
+    dyn Fn(&TextViewLinkEvent, &mut Window, &mut App) -> bool + Send + Sync;
+
+#[derive(Clone, Default)]
+pub(crate) struct TextViewLinkCallbacks {
+    pub(crate) hover: Option<Arc<TextViewLinkHoverFn>>,
+    pub(crate) click: Option<Arc<TextViewLinkClickFn>>,
+}
 
 /// A text view that can render Markdown or HTML.
 ///
@@ -51,6 +75,7 @@ pub struct TextView {
     scrollable: bool,
     code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     math_renderer: Option<Arc<MathRendererFn>>,
+    link_callbacks: TextViewLinkCallbacks,
     markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -91,6 +116,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             math_renderer: None,
+            link_callbacks: TextViewLinkCallbacks::default(),
             markdown_extensions: Arc::default(),
         }
     }
@@ -108,6 +134,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             math_renderer: None,
+            link_callbacks: TextViewLinkCallbacks::default(),
             markdown_extensions: Arc::default(),
         }
     }
@@ -125,6 +152,7 @@ impl TextView {
             scrollable: false,
             code_block_actions: None,
             math_renderer: None,
+            link_callbacks: TextViewLinkCallbacks::default(),
             markdown_extensions: Arc::default(),
         }
     }
@@ -138,6 +166,28 @@ impl TextView {
     /// Set the text view to be selectable, default is false.
     pub fn selectable(mut self, selectable: bool) -> Self {
         self.selectable = selectable;
+        self
+    }
+
+    /// Set a callback for text link hover changes.
+    ///
+    /// The callback receives the hovered link, or `None` when the pointer leaves it.
+    pub fn on_link_hover<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(Option<TextViewLinkEvent>, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.link_callbacks.hover = Some(Arc::new(handler));
+        self
+    }
+
+    /// Set a callback for text link clicks.
+    ///
+    /// Return `true` to handle the click, or `false` to keep the default URL opening behavior.
+    pub fn on_link_click<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(&TextViewLinkEvent, &mut Window, &mut App) -> bool + Send + Sync + 'static,
+    {
+        self.link_callbacks.click = Some(Arc::new(handler));
         self
     }
 
@@ -304,6 +354,7 @@ impl Element for TextView {
         state.update(cx, |state, cx| {
             state.code_block_actions = self.code_block_actions.clone();
             state.math_renderer = self.math_renderer.clone();
+            state.link_callbacks = self.link_callbacks.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             state.selectable = self.selectable;
             state.scrollable = self.scrollable;
@@ -381,7 +432,7 @@ impl Element for TextView {
 
 #[cfg(test)]
 mod tests {
-    use super::{TextView, TextViewPlugin};
+    use super::{TextView, TextViewLinkEvent, TextViewPlugin};
     use crate::text::{TextViewState, TextViewStyle};
     use gpui::{
         AppContext as _, Context, Entity, IntoElement, Modifiers, MouseButton, MouseDownEvent,
@@ -522,6 +573,50 @@ mod tests {
         }
     }
 
+    struct LinkEventTextViewTestRoot {
+        text_view: Entity<TextViewState>,
+        hover_events: Arc<Mutex<Vec<Option<TextViewLinkEvent>>>>,
+        click_events: Arc<Mutex<Vec<TextViewLinkEvent>>>,
+        handled: bool,
+    }
+
+    impl LinkEventTextViewTestRoot {
+        fn new(
+            text: &str,
+            hover_events: Arc<Mutex<Vec<Option<TextViewLinkEvent>>>>,
+            click_events: Arc<Mutex<Vec<TextViewLinkEvent>>>,
+            handled: bool,
+            cx: &mut Context<Self>,
+        ) -> Self {
+            let text = text.to_string();
+            Self {
+                text_view: cx.new(|cx| TextViewState::markdown(&text, cx)),
+                hover_events,
+                click_events,
+                handled,
+            }
+        }
+    }
+
+    impl Render for LinkEventTextViewTestRoot {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let hover_events = self.hover_events.clone();
+            let click_events = self.click_events.clone();
+            let handled = self.handled;
+            div().w(px(420.)).child(
+                TextView::new(&self.text_view)
+                    .selectable(true)
+                    .on_link_hover(move |event, _, _| {
+                        hover_events.lock().unwrap().push(event);
+                    })
+                    .on_link_click(move |event, _, _| {
+                        click_events.lock().unwrap().push(event.clone());
+                        handled
+                    }),
+            )
+        }
+    }
+
     #[gpui::test]
     fn math_renderer_handles_inline_and_display_math(cx: &mut TestAppContext) {
         cx.update(crate::init);
@@ -632,6 +727,84 @@ mod tests {
         let view = TextView::markdown("math-clone", "$x$").math_renderer(|_, _, _, _, _| div());
 
         assert!(view.clone().math_renderer.is_some());
+    }
+
+    #[test]
+    fn cloned_text_view_keeps_link_callbacks() {
+        let view = TextView::markdown("link-clone", "[link](https://example.com)")
+            .on_link_hover(|_, _, _| {})
+            .on_link_click(|_, _, _| true);
+        let cloned = view.clone();
+
+        assert!(cloned.link_callbacks.hover.is_some());
+        assert!(cloned.link_callbacks.click.is_some());
+    }
+
+    #[gpui::test]
+    fn handled_link_click_skips_default_open(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let hover_events = Arc::new(Mutex::new(Vec::new()));
+        let click_events = Arc::new(Mutex::new(Vec::new()));
+        let hover_events_for_root = hover_events.clone();
+        let click_events_for_root = click_events.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|cx| {
+                LinkEventTextViewTestRoot::new(
+                    "[docs](https://example.com/docs \"Docs\")",
+                    hover_events_for_root,
+                    click_events_for_root,
+                    true,
+                    cx,
+                )
+            });
+            crate::Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        let position = point(px(10.), px(10.));
+        cx.simulate_click(position, Modifiers::default());
+
+        assert_eq!(cx.opened_url(), None);
+        let clicks = click_events.lock().unwrap();
+        assert_eq!(clicks.len(), 1);
+        assert_eq!(clicks[0].url.as_ref(), "https://example.com/docs");
+        assert_eq!(clicks[0].title.as_deref(), Some("Docs"));
+        assert_eq!(clicks[0].position, position);
+    }
+
+    #[gpui::test]
+    fn unhandled_inline_flow_link_click_keeps_default_open(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let hover_events = Arc::new(Mutex::new(Vec::new()));
+        let click_events = Arc::new(Mutex::new(Vec::new()));
+        let hover_events_for_root = hover_events.clone();
+        let click_events_for_root = click_events.clone();
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|cx| {
+                LinkEventTextViewTestRoot::new(
+                    "[flow](https://example.com/flow) ![image](https://example.com/image.svg)",
+                    hover_events_for_root,
+                    click_events_for_root,
+                    false,
+                    cx,
+                )
+            });
+            crate::Root::new(content, window, cx)
+        });
+        let cx: &mut VisualTestContext = cx;
+
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.simulate_click(point(px(10.), px(10.)), Modifiers::default());
+
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/flow"));
+        assert_eq!(click_events.lock().unwrap().len(), 1);
     }
 
     #[gpui::test]

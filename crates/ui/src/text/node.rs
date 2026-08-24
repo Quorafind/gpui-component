@@ -21,8 +21,9 @@ use crate::{
     scroll::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, MarkdownExtensions, MarkdownNode, MathRendererFn,
+        TextViewLinkCallbacks,
         document::NodeRenderOptions,
-        inline::{Inline, InlineState},
+        inline::{Inline, InlineLink, InlineState},
         inline_flow::{InlineFlow, InlineFlowItem},
     },
     tooltip::Tooltip,
@@ -879,6 +880,7 @@ pub(crate) struct NodeContext {
     pub(crate) style: TextViewStyle,
     pub(crate) code_block_actions: Option<Arc<CodeBlockActionsFn>>,
     pub(crate) math_renderer: Option<Arc<MathRendererFn>>,
+    pub(crate) link_callbacks: TextViewLinkCallbacks,
     pub(crate) markdown_extensions: Arc<MarkdownExtensions>,
 }
 
@@ -891,8 +893,8 @@ impl NodeContext {
 impl PartialEq for NodeContext {
     fn eq(&self, other: &Self) -> bool {
         self.link_refs == other.link_refs && self.style == other.style
-        // Note: code_block_actions, math_renderer, and markdown_extensions are
-        // intentionally not compared (closures can't be compared)
+        // Note: code_block_actions, math_renderer, link_callbacks, and
+        // markdown_extensions are intentionally not compared (closures can't be compared)
     }
 }
 
@@ -912,6 +914,8 @@ impl Paragraph {
             return InlineFlow::new(
                 span.unwrap_or_default(),
                 self.inline_flow_items(node_cx, window, cx),
+                self.state.clone(),
+                node_cx.link_callbacks.clone(),
             )
             .into_any_element();
         }
@@ -920,8 +924,9 @@ impl Paragraph {
 
         let mut text = String::new();
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
-        let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
+        let mut links: Vec<(Range<usize>, InlineLink)> = vec![];
         let mut offset = 0;
+        let mut link_identity = 0;
 
         let mut ix = 0;
         for inline_node in children {
@@ -940,6 +945,7 @@ impl Paragraph {
                             links.clone(),
                             highlights.clone(),
                         )
+                        .link_events(ix, self.state.clone(), node_cx.link_callbacks.clone())
                         .into_any_element(),
                     );
                 }
@@ -996,7 +1002,8 @@ impl Paragraph {
                         highlight.background_color = Some(cx.theme().accent);
                     }
                     if let Some(color) = style.highlight {
-                        highlight = highlight.highlight(resolved_mark_highlight(color, &node_cx.style));
+                        highlight =
+                            highlight.highlight(resolved_mark_highlight(color, &node_cx.style));
                     }
 
                     if let Some(mut link_mark) = style.link.clone() {
@@ -1013,7 +1020,14 @@ impl Paragraph {
                             }
                         }
 
-                        links.push((inner_range.clone(), link_mark));
+                        links.push((
+                            inner_range.clone(),
+                            InlineLink {
+                                identity: link_identity,
+                                mark: link_mark,
+                            },
+                        ));
+                        link_identity += 1;
                     }
 
                     node_highlights.push((inner_range, highlight));
@@ -1030,8 +1044,11 @@ impl Paragraph {
             if let Ok(mut state) = self.state.lock() {
                 state.set_text(text.into());
             }
-            child_nodes
-                .push(Inline::new(ix, self.state.clone(), links, highlights).into_any_element());
+            child_nodes.push(
+                Inline::new(ix, self.state.clone(), links, highlights)
+                    .link_events(ix, self.state.clone(), node_cx.link_callbacks.clone())
+                    .into_any_element(),
+            );
         }
 
         div()
@@ -1057,14 +1074,15 @@ impl Paragraph {
         let mut items = Vec::new();
         let mut text = String::new();
         let mut highlights: Vec<(Range<usize>, HighlightStyle)> = vec![];
-        let mut links: Vec<(Range<usize>, LinkMark)> = vec![];
+        let mut links: Vec<(Range<usize>, InlineLink)> = vec![];
         let mut offset = 0;
+        let mut link_identity = 0;
 
         let flush_text =
             |items: &mut Vec<InlineFlowItem>,
              state: &Arc<Mutex<InlineState>>,
              text: &mut String,
-             links: &mut Vec<(Range<usize>, LinkMark)>,
+             links: &mut Vec<(Range<usize>, InlineLink)>,
              highlights: &mut Vec<(Range<usize>, HighlightStyle)>| {
                 if text.is_empty() {
                     return;
@@ -1171,7 +1189,14 @@ impl Paragraph {
                         link_mark = mark.clone();
                     }
 
-                    links.push((inner_range.clone(), link_mark));
+                    links.push((
+                        inner_range.clone(),
+                        InlineLink {
+                            identity: link_identity,
+                            mark: link_mark,
+                        },
+                    ));
+                    link_identity += 1;
                 }
 
                 node_highlights.push((inner_range, highlight));
