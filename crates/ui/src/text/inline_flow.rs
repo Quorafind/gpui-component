@@ -11,7 +11,11 @@ use gpui::{
     WhiteSpace, Window, img, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
-use crate::{WindowExt as _, text::TextViewLinkCallbacks, tooltip::Tooltip};
+use crate::{
+    WindowExt as _,
+    text::{TextViewLinkCallbacks, TextViewLinkEvent},
+    tooltip::Tooltip,
+};
 
 use super::{
     inline::{Inline, InlineLink, InlineState},
@@ -132,7 +136,9 @@ impl InlineFlow {
         link: &Option<LinkMark>,
         title: &str,
         size: Size<Pixels>,
+        link_callbacks: &TextViewLinkCallbacks,
     ) -> AnyElement {
+        let link_callbacks = link_callbacks.clone();
         img(url.clone())
             .id(ix)
             .object_fit(ObjectFit::Contain)
@@ -143,10 +149,16 @@ impl InlineFlow {
                 let title = title.to_string();
                 this.cursor_pointer()
                     .tooltip(move |window, cx| Tooltip::new(title.clone()).build(window, cx))
-                    .on_click(move |_, window, cx| {
+                    .on_click(move |event, window, cx| {
                         window.end_text_selection(cx);
                         cx.stop_propagation();
-                        cx.open_url(&link.url);
+                        let event = TextViewLinkEvent {
+                            url: link.url.clone(),
+                            title: link.title.clone(),
+                            position: event.position(),
+                            modifiers: event.modifiers(),
+                        };
+                        link_callbacks.click_or_open(&event, window, cx);
                     })
             })
             .into_any_element()
@@ -341,6 +353,7 @@ impl Element for InlineFlow {
                         link,
                         title.as_str(),
                         fragment_size,
+                        &self.link_callbacks,
                     );
                     element.prepaint_as_root(
                         bounds.origin + origin,

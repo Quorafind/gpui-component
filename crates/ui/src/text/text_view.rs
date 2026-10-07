@@ -47,6 +47,27 @@ pub(crate) struct TextViewLinkCallbacks {
     pub(crate) click: Option<Arc<TextViewLinkClickFn>>,
 }
 
+impl TextViewLinkCallbacks {
+    /// Offers a clicked link to the click callback, and opens it only when
+    /// the callback leaves it unhandled. Every link click goes through here,
+    /// text and linked images alike, so a view that handles its links
+    /// decides about all of them.
+    pub(crate) fn click_or_open(
+        &self,
+        event: &TextViewLinkEvent,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let handled = self
+            .click
+            .as_ref()
+            .is_some_and(|callback| callback(event, window, cx));
+        if !handled {
+            cx.open_url(&event.url);
+        }
+    }
+}
+
 /// A text view that can render Markdown or HTML.
 ///
 /// ## Goals

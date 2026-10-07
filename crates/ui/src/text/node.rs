@@ -21,7 +21,7 @@ use crate::{
     scroll::horizontal_scroll_area,
     text::{
         CodeBlockActionsFn, MarkdownExtensions, MarkdownNode, MathRendererFn,
-        TextViewLinkCallbacks,
+        TextViewLinkCallbacks, TextViewLinkEvent,
         document::NodeRenderOptions,
         inline::{Inline, InlineLink, InlineState},
         inline_flow::{InlineFlow, InlineFlowItem},
@@ -961,10 +961,19 @@ impl Paragraph {
                                 .tooltip(move |window, cx| {
                                     Tooltip::new(title.clone()).build(window, cx)
                                 })
-                                .on_click(move |_, window, cx| {
-                                    window.end_text_selection(cx);
-                                    cx.stop_propagation();
-                                    cx.open_url(&link.url);
+                                .on_click({
+                                    let link_callbacks = node_cx.link_callbacks.clone();
+                                    move |event, window, cx| {
+                                        window.end_text_selection(cx);
+                                        cx.stop_propagation();
+                                        let event = TextViewLinkEvent {
+                                            url: link.url.clone(),
+                                            title: link.title.clone(),
+                                            position: event.position(),
+                                            modifiers: event.modifiers(),
+                                        };
+                                        link_callbacks.click_or_open(&event, window, cx);
+                                    }
                                 })
                         })
                         .into_any_element(),

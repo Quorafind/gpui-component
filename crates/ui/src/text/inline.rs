@@ -569,7 +569,7 @@ impl Element for Inline {
                 let text_layout = text_layout.clone();
                 let hitbox = hitbox.clone();
                 let text_view_state = GlobalState::global(cx).text_view_state().cloned();
-                let on_link_click = self.link_callbacks.click.clone();
+                let link_callbacks = self.link_callbacks.clone();
 
                 move |event: &MouseUpEvent, phase, window, cx| {
                     if !phase.bubble() || !hitbox.is_hovered(window) {
@@ -593,12 +593,7 @@ impl Element for Inline {
                             position: event.position,
                             modifiers: event.modifiers,
                         };
-                        let handled = on_link_click
-                            .as_ref()
-                            .is_some_and(|callback| callback(&event, window, cx));
-                        if !handled {
-                            cx.open_url(&event.url);
-                        }
+                        link_callbacks.click_or_open(&event, window, cx);
                     }
                 }
             });
