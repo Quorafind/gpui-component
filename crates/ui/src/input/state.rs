@@ -2008,7 +2008,16 @@ impl InputState {
         // Clamp the deferred target into the same safe range that
         // `update_scroll_offset` enforces on persist, so paint never shows an
         // over-scrolled frame before the post-paint clamp pulls it back.
-        let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
+        //
+        // `scroll_size` is what the last paint measured, from before any edit
+        // made since. Text that edit added is already in the display map, so
+        // count its rows too: clamping to the old height alone sent a paste
+        // longer than the old content back to the top, away from the caret.
+        let content_height = self
+            .scroll_size
+            .height
+            .max(line_height * self.display_map.wrap_row_count());
+        let safe_y_min = (-content_height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
@@ -3375,6 +3384,137 @@ ORDER BY id
                 );
             });
         });
+    }
+
+    /// Regression test: pasting more text than an auto-grow input shows must
+    /// scroll to the caret at the end of the paste. `scroll_to` used to clamp
+    /// its target to the content height painted *before* the paste, so a long
+    /// paste landed scrolled to the top, far from the caret.
+    #[gpui::test]
+    fn test_paste_scrolls_to_caret_past_the_old_content_height(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state.auto_grow(2, 6));
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        // A window a few lines tall, like a chat composer: the pasted text
+        // overflows it.
+        cx.simulate_resize(gpui::size(px(480.), px(120.)));
+
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value("intro ", window, cx);
+                state.move_to(state.text.len(), None, cx);
+            });
+        });
+        cx.run_until_parked();
+
+        let pasted: String = (1..=40)
+            .map(|i| format!("pasted line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(pasted));
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.paste(&Paste, window, cx);
+                assert_eq!(state.cursor(), state.text.len());
+                let deferred = state
+                    .deferred_scroll_offset
+                    .expect("paste should scroll to the caret");
+                assert!(
+                    deferred.y < px(0.),
+                    "the scroll target must reach the pasted text, got {:?}",
+                    deferred.y
+                );
+            });
+        });
+        cx.run_until_parked();
+
+        cx.update(|_, cx| {
+            input.read_with(cx, |state, _| {
+                let offset = state.scroll_handle.offset();
+                let safe_y_min =
+                    (-state.scroll_size.height + state.input_bounds.size.height).min(px(0.));
+                assert!(offset.y < px(0.), "painted at the top: {:?}", offset.y);
+                assert!(
+                    offset.y >= safe_y_min,
+                    "over-scrolled past the end: {:?} < {:?}",
+                    offset.y,
+                    safe_y_min
+                );
+                assert_eq!(
+                    offset.y, safe_y_min,
+                    "the caret ends the text, so the view ends at the bottom"
+                );
+            });
+        });
+    }
+
+    /// Pastes `text` at `at` into an input built by `build`, in a window a few
+    /// lines tall, and returns the scroll offset after the next paint.
+    fn paste_and_paint(
+        cx: &mut TestAppContext,
+        build: impl FnOnce(InputState) -> InputState + 'static,
+        initial: String,
+        at: usize,
+        text: String,
+    ) -> (Point<Pixels>, Pixels) {
+        let input_view = InputView::build(cx, build);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        cx.simulate_resize(gpui::size(px(480.), px(120.)));
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(initial, window, cx);
+                state.move_to(at, None, cx);
+            });
+        });
+        cx.run_until_parked();
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| state.paste(&Paste, window, cx));
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            input.read_with(cx, |state, _| {
+                let safe_y_min =
+                    (-state.scroll_size.height + state.input_bounds.size.height).min(px(0.));
+                (state.scroll_handle.offset(), safe_y_min)
+            })
+        })
+    }
+
+    fn numbered(prefix: &str, count: usize) -> String {
+        (1..=count)
+            .map(|i| format!("{prefix} {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The same holds for a multi-line input of fixed height.
+    #[gpui::test]
+    fn test_paste_scrolls_to_caret_in_a_fixed_multi_line_input(cx: &mut TestAppContext) {
+        let (offset, safe_y_min) = paste_and_paint(
+            cx,
+            |state| state.multi_line(true),
+            "intro ".into(),
+            "intro ".len(),
+            numbered("pasted line", 40),
+        );
+        assert!(offset.y < px(0.), "painted at the top: {:?}", offset.y);
+        assert!(offset.y >= safe_y_min);
+    }
+
+    /// The scroll follows the caret: a paste near the top of a long text
+    /// leaves the view at the top rather than pushing it down.
+    #[gpui::test]
+    fn test_paste_near_the_top_keeps_the_view_there(cx: &mut TestAppContext) {
+        let (offset, _) = paste_and_paint(
+            cx,
+            |state| state.auto_grow(2, 6),
+            numbered("draft line", 40),
+            0,
+            "a\nb".into(),
+        );
+        assert_eq!(offset.y, px(0.));
     }
 
     #[gpui::test]
