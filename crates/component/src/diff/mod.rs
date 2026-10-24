@@ -846,6 +846,7 @@ fn measure_code_width(
                         font: font.clone(),
                         color: cx.theme().foreground,
                         background_color: None,
+                        background_radius: None,
                         underline: None,
                         strikethrough: None,
                     }],

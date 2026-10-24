@@ -508,6 +508,7 @@ impl TableDelegate for StockTableDelegate {
                 font,
                 color: Hsla::default(),
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             };

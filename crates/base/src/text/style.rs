@@ -25,6 +25,9 @@ pub struct TextViewStyle {
     table_head: StyleRefinement,
     table_cell: StyleRefinement,
     inline_code: HighlightStyle,
+    /// The highlight `<mark>` text renders with; `None` keeps each mark's own
+    /// background color.
+    mark_highlight: Option<HighlightStyle>,
     /// The table body background, or the theme surface when `None`. Only
     /// [`Self::on_text_color`] sets it, to let a table on an inverted surface
     /// show that surface.
@@ -48,6 +51,7 @@ impl PartialEq for TextViewStyle {
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
             && self.inline_code == other.inline_code
+            && self.mark_highlight == other.mark_highlight
             && self.table_background == other.table_background
             && self.is_dark == other.is_dark
     }
@@ -91,6 +95,7 @@ impl TextViewStyle {
                 background_color: Some(colors.accent),
                 ..Default::default()
             },
+            mark_highlight: None,
             table_background: None,
             is_dark,
         }
@@ -167,6 +172,13 @@ impl TextViewStyle {
     /// which keeps [`TextViewStyle::default`] usable without a theme.
     pub fn with_inline_code(mut self, style: HighlightStyle) -> Self {
         self.inline_code = style;
+        self
+    }
+
+    /// Sets the highlight style for `<mark>` inline text, in place of the
+    /// background color each mark carries from its HTML.
+    pub fn with_mark_highlight(mut self, style: HighlightStyle) -> Self {
+        self.mark_highlight = Some(style);
         self
     }
 
@@ -269,6 +281,11 @@ impl TextViewStyle {
     /// fallback in [`Self::inline_code_highlight`] applies.
     pub fn inline_code(&self) -> HighlightStyle {
         self.inline_code
+    }
+
+    /// The highlight style for `<mark>` inline text, when one was set.
+    pub fn mark_highlight(&self) -> Option<HighlightStyle> {
+        self.mark_highlight
     }
 
     /// Whether content-specific assets should use their dark variant.
@@ -448,6 +465,22 @@ mod tests {
         );
         assert_eq!(style.heading(2), StyleRefinement::default().pb(rems(0.25)));
         assert!(style != base);
+    }
+
+    #[test]
+    fn mark_highlight_is_opt_in_and_part_of_style_identity() {
+        let default = TextViewStyle::default();
+        assert!(default.mark_highlight().is_none());
+
+        let highlight = HighlightStyle {
+            color: Some(gpui::red()),
+            background_color: Some(gpui::blue()),
+            background_radius: Some(gpui::px(6.)),
+            ..Default::default()
+        };
+        let configured = TextViewStyle::default().with_mark_highlight(highlight);
+        assert_eq!(configured.mark_highlight(), Some(highlight));
+        assert!(configured != default);
     }
 
     #[test]

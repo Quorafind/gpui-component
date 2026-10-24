@@ -1179,6 +1179,7 @@ impl<M: InputModeKind> TextElement<M> {
                     font: style.font(),
                     color: gpui::black(),
                     background_color: None,
+                    background_radius: None,
                     underline: None,
                     strikethrough: None,
                 }],
@@ -1231,6 +1232,7 @@ impl<M: InputModeKind> TextElement<M> {
                 font: style.font(),
                 color: invisible_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }],
@@ -1246,6 +1248,7 @@ impl<M: InputModeKind> TextElement<M> {
                 font: style.font(),
                 color: invisible_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }],
@@ -1303,6 +1306,7 @@ impl<M: InputModeKind> TextElement<M> {
                 font: font.clone(),
                 color: completion_color,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             };
@@ -1326,6 +1330,7 @@ impl<M: InputModeKind> TextElement<M> {
                     font: font.clone(),
                     color: completion_color,
                     background_color: None,
+                    background_radius: None,
                     underline: None,
                     strikethrough: None,
                 };
@@ -2746,6 +2751,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             font: style.font(),
             color: text_color,
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -2754,6 +2760,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             font: style.font(),
             color: text_color,
             background_color: None,
+            background_radius: None,
             underline: Some(UnderlineStyle {
                 thickness: px(1.),
                 color: Some(text_color),
@@ -2846,6 +2853,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                                 font: key.font.clone(),
                                 color: gpui::black(),
                                 background_color: None,
+                                background_radius: None,
                                 underline: None,
                                 strikethrough: None,
                             }],
@@ -3015,6 +3023,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 font: style.font(),
                 color: state.editor_style.muted_foreground,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }];
@@ -3023,6 +3032,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 font: style.font(),
                 color: state.editor_style.foreground,
                 background_color: None,
+                background_radius: None,
                 underline: None,
                 strikethrough: None,
             }];
@@ -4678,6 +4688,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::black(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -4827,6 +4838,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::black(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -4865,6 +4877,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::blue(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };
@@ -4944,6 +4957,7 @@ mod tests {
             font: gpui::font(".SystemUIFont"),
             color: gpui::blue(),
             background_color: None,
+            background_radius: None,
             underline: None,
             strikethrough: None,
         };

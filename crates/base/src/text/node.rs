@@ -2663,7 +2663,10 @@ fn mark_highlight(mark: &TextMark, node_cx: &NodeContext, cx: &App) -> InlineHig
         font_family = Some(cx.theme().tokens.typography.mono.clone());
     }
     if let Some(color) = mark.highlight {
-        highlight.background_color = Some(color);
+        highlight = highlight.highlight(node_cx.style.mark_highlight().unwrap_or(HighlightStyle {
+            background_color: Some(color),
+            ..Default::default()
+        }));
     }
     InlineHighlight {
         style: highlight,
