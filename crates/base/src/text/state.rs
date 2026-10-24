@@ -22,8 +22,9 @@ use crate::{
     async_util::{Receiver, Sender, unbounded},
     input::{self, SelectAll},
     text::{
-        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, MarkdownExtensions,
-        RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn, TextViewStyle,
+        CodeBlockActionsFn, CodeBlockHighlighterFn, LinkClickHandlerFn, LinkHoverHandlerFn,
+        MarkdownExtensions, RangeHighlight, RangeHighlightError, RenderedText, TableActionsFn,
+        TextViewLinkEvent, TextViewStyle,
         document::ParsedDocument,
         format,
         node::{self, NodeContext},
@@ -130,6 +131,9 @@ pub struct TextViewState {
     pub(super) table_actions: Option<std::sync::Arc<TableActionsFn>>,
     pub(super) image_source: Option<std::sync::Arc<super::text_view::ImageSourceFn>>,
     pub(super) link_click_handler: Option<std::sync::Arc<LinkClickHandlerFn>>,
+    pub(super) link_hover_handler: Option<std::sync::Arc<LinkHoverHandlerFn>>,
+    /// The link last reported to [`Self::link_hover_handler`].
+    hovered_link: Option<HoveredLink>,
     pub(super) markdown_extensions: Arc<MarkdownExtensions>,
 
     pub(super) is_selecting: bool,
@@ -170,7 +174,64 @@ pub struct TextViewState {
     _receive_task: Task<()>,
 }
 
+/// The link under the pointer, as last reported to the hover handler, and
+/// the `Inline` fragment that reported it.
+#[derive(Clone, Debug, PartialEq)]
+struct HoveredLink {
+    url: SharedString,
+    title: Option<SharedString>,
+    modifiers: gpui::Modifiers,
+    owner: usize,
+}
+
 impl TextViewState {
+    /// Record which link, if any, the `Inline` fragment `owner` has under the
+    /// pointer, and return the event the hover handler should get: the link
+    /// when it differs from the one reported last (or the modifiers do), and
+    /// `None` when the fragment that reported the hovered link no longer has
+    /// one under the pointer. Every fragment sees every mouse move, so only
+    /// that fragment may clear it.
+    pub(super) fn update_hovered_link(
+        &mut self,
+        owner: usize,
+        link: Option<&node::LinkMark>,
+        position: Point<Pixels>,
+        modifiers: gpui::Modifiers,
+    ) -> Option<Option<TextViewLinkEvent>> {
+        match link {
+            Some(link) => {
+                let changed = self.hovered_link.as_ref().is_none_or(|hovered| {
+                    hovered.url != link.url
+                        || hovered.title != link.title
+                        || hovered.modifiers != modifiers
+                });
+                self.hovered_link = Some(HoveredLink {
+                    url: link.url.clone(),
+                    title: link.title.clone(),
+                    modifiers,
+                    owner,
+                });
+                changed.then(|| {
+                    Some(TextViewLinkEvent {
+                        url: link.url.clone(),
+                        title: link.title.clone(),
+                        position,
+                        modifiers,
+                    })
+                })
+            }
+            None if self
+                .hovered_link
+                .as_ref()
+                .is_some_and(|hovered| hovered.owner == owner) =>
+            {
+                self.hovered_link = None;
+                Some(None)
+            }
+            None => None,
+        }
+    }
+
     /// Create a Markdown TextViewState.
     pub fn markdown(text: &str, cx: &mut Context<Self>) -> Self {
         Self::new(TextViewFormat::Markdown, text, cx)
@@ -235,6 +296,8 @@ impl TextViewState {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_hover_handler: None,
+            hovered_link: None,
             image_source: None,
             markdown_extensions: Arc::default(),
             is_selecting: false,

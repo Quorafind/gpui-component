@@ -54,6 +54,10 @@ pub struct TextViewStyle {
     /// Default is [`HighlightStyle::default()`], the `background_color` will
     /// fallback to `cx.theme().accent`, if it is `None`.
     pub inline_code: HighlightStyle,
+    /// Highlight style applied to `<mark>` inline text.
+    ///
+    /// When omitted, each mark keeps the background color parsed from its HTML.
+    pub mark_highlight: Option<HighlightStyle>,
     /// Whether content-specific rendering should use dark-mode assets.
     pub is_dark: bool,
 }
@@ -70,6 +74,7 @@ impl Default for TextViewStyle {
             table_head: StyleRefinement::default(),
             table_cell: StyleRefinement::default(),
             inline_code: HighlightStyle::default(),
+            mark_highlight: None,
             is_dark: false,
         }
     }
@@ -93,6 +98,7 @@ impl PartialEq for TextViewStyle {
             && self.table_head == other.table_head
             && self.table_cell == other.table_cell
             && self.inline_code == other.inline_code
+            && self.mark_highlight == other.mark_highlight
             && self.is_dark == other.is_dark
     }
 }
@@ -123,6 +129,11 @@ impl TextViewStyle {
     /// Set style for inline code spans.
     pub fn inline_code(mut self, style: HighlightStyle) -> Self {
         self.inline_code = style;
+        self
+    }
+    /// Set the highlight style for `<mark>` inline text.
+    pub fn mark_highlight(mut self, style: HighlightStyle) -> Self {
+        self.mark_highlight = Some(style);
         self
     }
     /// Set extra style for the table container.

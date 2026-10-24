@@ -4,8 +4,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Bounds, ClickEvent, ContentMask, Element, ElementId, Entity, Global,
     GlobalElementId, Hitbox, HitboxBehavior, InspectorElementId, InteractiveElement, IntoElement,
-    LayoutId, MouseButton, ParentElement, Pixels, Refineable as _, SharedString, StyleRefinement,
-    Styled, Window, div, point, px,
+    LayoutId, Modifiers, MouseButton, ParentElement, Pixels, Point, Refineable as _, SharedString,
+    StyleRefinement, Styled, Window, div, point, px,
 };
 
 use crate::StyledExt;
@@ -109,6 +109,23 @@ pub(crate) type ImageSourceFn = dyn Fn(&gpui::SharedUri) -> gpui::ImageSource + 
 pub(crate) type LinkClickHandlerFn =
     dyn Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync;
 
+/// The text link under the pointer of a [`TextView`], reported to
+/// [`TextView::on_link_hover`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextViewLinkEvent {
+    /// The link destination.
+    pub url: SharedString,
+    /// The optional link title.
+    pub title: Option<SharedString>,
+    /// The mouse position in window coordinates.
+    pub position: Point<Pixels>,
+    /// The keyboard modifiers held during the mouse move.
+    pub modifiers: Modifiers,
+}
+
+pub(crate) type LinkHoverHandlerFn =
+    dyn Fn(Option<TextViewLinkEvent>, &mut Window, &mut App) + Send + Sync;
+
 /// Kept by the element only, so unlike the handlers the state carries, it
 /// may hold a `ScrollHandle`.
 pub(crate) type RevealHandlerFn = dyn Fn(Bounds<Pixels>, &mut Window, &mut App);
@@ -165,6 +182,7 @@ pub struct TextView {
     code_block_highlighter: Option<Arc<CodeBlockHighlighterFn>>,
     table_actions: Option<Arc<TableActionsFn>>,
     link_click_handler: Option<Arc<LinkClickHandlerFn>>,
+    link_hover_handler: Option<Arc<LinkHoverHandlerFn>>,
     image_source: Option<Arc<ImageSourceFn>>,
     reveal_handler: Option<Rc<RevealHandlerFn>>,
     markdown_extensions: Arc<MarkdownExtensions>,
@@ -212,6 +230,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_hover_handler: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -236,6 +255,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_hover_handler: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -260,6 +280,7 @@ impl TextView {
             code_block_highlighter: None,
             table_actions: None,
             link_click_handler: None,
+            link_hover_handler: None,
             image_source: None,
             reveal_handler: None,
             markdown_extensions: Arc::default(),
@@ -409,6 +430,19 @@ impl TextView {
         F: Fn(&SharedString, &ClickEvent, &mut Window, &mut App) + Send + Sync + 'static,
     {
         self.link_click_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Report the text link under the pointer.
+    ///
+    /// The handler receives the link when the pointer enters it, moves to
+    /// another link or changes the held modifiers over it, and `None` when
+    /// the pointer leaves it.
+    pub fn on_link_hover<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(Option<TextViewLinkEvent>, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.link_hover_handler = Some(Arc::new(handler));
         self
     }
 
@@ -695,6 +729,7 @@ impl Element for TextView {
             state.code_block_highlighter = code_block_highlighter;
             state.table_actions = self.table_actions.clone();
             state.link_click_handler = self.link_click_handler.clone();
+            state.link_hover_handler = self.link_hover_handler.clone();
             state.image_source = self.image_source.clone();
             state.set_markdown_extensions(self.markdown_extensions.clone(), cx);
             if let Some(motion) = &self.motion {
@@ -1118,6 +1153,75 @@ mod tests {
             });
         }
         assert_eq!(*captured.lock().unwrap(), vec!["one", "two"]);
+    }
+
+    #[gpui::test]
+    fn link_hover_reports_entering_and_leaving_a_link(cx: &mut TestAppContext) {
+        use std::sync::Mutex;
+        struct Root {
+            view: Entity<TextViewState>,
+            events: Arc<Mutex<Vec<Option<super::TextViewLinkEvent>>>>,
+        }
+        impl Render for Root {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let events = self.events.clone();
+                div()
+                    .w(px(300.))
+                    .child(TextView::new(&self.view).on_link_hover(move |event, _, _| {
+                        events.lock().unwrap().push(event);
+                    }))
+            }
+        }
+        cx.update(crate::init);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let (root, cx) = cx.add_window_view({
+            let events = events.clone();
+            move |_, cx| Root {
+                view: cx.new(|cx| {
+                    TextViewState::markdown("[docs](https://example.com/docs \"Docs\") tail", cx)
+                }),
+                events,
+            }
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = root.read_with(cx, |root, cx| {
+            root.view.read(cx).selection_adapter.text_bounds()[0]
+        });
+        let over_link = point(bounds.left() + px(4.), bounds.center().y);
+
+        cx.simulate_mouse_move(over_link, None, Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        // A second move over the same link reports nothing new.
+        cx.simulate_mouse_move(
+            over_link + point(px(1.), px(0.)),
+            None,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        {
+            let events = events.lock().unwrap();
+            assert_eq!(events.len(), 1, "{events:?}");
+            let event = events[0].as_ref().expect("entering the link");
+            assert_eq!(event.url.as_ref(), "https://example.com/docs");
+            assert_eq!(event.title.as_deref(), Some("Docs"));
+            assert_eq!(event.position, over_link);
+        }
+
+        // The same link with a modifier held is a new event.
+        cx.simulate_mouse_move(over_link, None, Modifiers::secondary_key());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert_eq!(events.lock().unwrap().len(), 2);
+
+        cx.simulate_mouse_move(
+            point(px(290.), bounds.bottom() + px(200.)),
+            None,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(events[2], None, "leaving the link");
     }
 
     #[gpui::test]

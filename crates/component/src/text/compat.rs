@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::{
     MarkdownExtensions, MarkdownNode, MarkdownParseContext, MarkdownPlugin, SelectionFormat,
-    TableData, TextViewMotion, TextViewState, TextViewStyle,
+    TableData, TextViewLinkEvent, TextViewMotion, TextViewState, TextViewStyle,
 };
 use gpui_base::{Easing, text::CodeBlock};
 
@@ -143,6 +143,15 @@ impl TextView {
         E: IntoElement,
     {
         self.inner = self.inner.table_actions(f);
+        self
+    }
+    /// Reports the text link under the pointer: the link when the pointer
+    /// enters it, and `None` when it leaves.
+    pub fn on_link_hover<F>(mut self, f: F) -> Self
+    where
+        F: Fn(Option<TextViewLinkEvent>, &mut Window, &mut App) + Send + Sync + 'static,
+    {
+        self.inner = self.inner.on_link_hover(f);
         self
     }
     /// Handles link clicks instead of opening the URL.
@@ -368,7 +377,10 @@ pub(super) fn resolve_component_style(
         .with_table_cell(table_cell)
         .with_inline_code(inline_code)
         .with_dark(is_dark);
-    style
+    match legacy.mark_highlight {
+        Some(mark_highlight) => style.with_mark_highlight(mark_highlight),
+        None => style,
+    }
 }
 
 fn refine_highlight_style(style: &mut HighlightStyle, refinement: HighlightStyle) {
@@ -383,6 +395,9 @@ fn refine_highlight_style(style: &mut HighlightStyle, refinement: HighlightStyle
     }
     if refinement.background_color.is_some() {
         style.background_color = refinement.background_color;
+    }
+    if refinement.background_radius.is_some() {
+        style.background_radius = refinement.background_radius;
     }
     if refinement.underline.is_some() {
         style.underline = refinement.underline;

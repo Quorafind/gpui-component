@@ -1186,15 +1186,42 @@ impl Element for Inline {
 
         // Mouse move: repaint only when the pointer enters, leaves or moves
         // between links, so the link cursor follows it. Hovering plain text
-        // changes nothing painted.
+        // changes nothing painted. The text view's hover handler hears the
+        // same changes; this listener runs for moves outside the hitbox too,
+        // so the fragment that reported a link can report leaving it.
         if !self.links.is_empty() {
             window.on_mouse_event({
                 let hitbox = hitbox.clone();
                 let text_layout = text_layout.clone();
                 let links = self.links.clone();
                 let mut hovered_link = hovered_link;
+                let text_view_state = GlobalState::global(cx).text_view_state();
+                let owner = Arc::as_ptr(&self.state) as usize;
                 move |event: &MouseMoveEvent, phase, window, cx| {
-                    if !phase.bubble() || !hitbox.is_hovered(window) {
+                    if !phase.bubble() {
+                        return;
+                    }
+                    let is_hovered = hitbox.is_hovered(window);
+                    if let Some(text_view_state) = &text_view_state
+                        && text_view_state.read(cx).link_hover_handler.is_some()
+                    {
+                        let link = is_hovered
+                            .then(|| Self::link_for_position(&text_layout, &links, event.position))
+                            .flatten();
+                        let (handler, update) = text_view_state.update(cx, |state, _| {
+                            let update = state.update_hovered_link(
+                                owner,
+                                link.as_ref(),
+                                event.position,
+                                event.modifiers,
+                            );
+                            (state.link_hover_handler.clone(), update)
+                        });
+                        if let (Some(handler), Some(update)) = (handler, update) {
+                            handler(update, window, cx);
+                        }
+                    }
+                    if !is_hovered {
                         return;
                     }
 
