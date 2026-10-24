@@ -59,26 +59,24 @@ gpui-shell = { path = "crates/shell", version = "0.8.0" }
 gpui-webview = { path = "crates/webview", version = "0.8.0" }
 story = { path = "crates/story" }
 
-# GPUI comes from the `gpui-pre-*` snapshots of Zed's crates, and any snapshot
-# may change GPUI's API. These requirements are what the published gpui-kit
-# crates carry to crates.io, so they pin the exact snapshot the release was
-# built against: a caret requirement let the weekly release move applications
-# onto a newer snapshot that gpui-component did not compile with (#3156). Bump
-# every snapshot crate together with its Cargo.lock entry; `script/check-gpui-pin.ts`
-# fails CI when a pin is not exact.
-gpui = { package = "gpui-pre", version = "=0.3.9" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
-gpui_web = { package = "gpui-pre-web", version = "=0.3.9" }
+# Rebon fork: GPUI comes from Zed's git repository rather than the
+# `gpui-pre-*` snapshots, so an application can reroute it to its own GPUI
+# fork with `[patch."https://github.com/zed-industries/zed"]` and build one
+# copy of GPUI. The code here matches the gpui-pre 0.3.9 snapshot, Zed
+# 93d7456; applications pin that revision (or a fork rebased onto it).
+gpui = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui_web = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de" }
 # Fast is optional; existing crates select it through their gpui-fast feature.
 # Explicit package fields make Cargo use these dependency keys as Rust crate names;
 # the packages declare the same library names as the pre backend.
 gpui-fast = { package = "gpui-fast", version = "0.1.10", features = ["windows-manifest-provided-by-host"] }
 gpui-fast-platform = { package = "gpui-fast-platform", version = "0.1.10", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
 gpui-fast-web = { package = "gpui-fast-web", version = "0.1.10" }
-gpui_macros = { package = "gpui-pre-macros", version = "=0.3.9" }
-reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.9" }
-sum-tree = { package = "gpui-pre-sum-tree", version = "=0.3.9" }
-reqwest = { package = "gpui-pre-reqwest", version = "=0.12.15", default-features = false, features = [
+gpui_macros = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de" }
+reqwest_client = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de" }
+sum-tree = { git = "https://github.com/zed-industries/zed", rev = "93d745668805029476e6d7fbb19652116fed51de", package = "sum_tree" }
+reqwest = { git = "https://github.com/zed-industries/reqwest.git", rev = "33bc764aa15ff7b200bf7c93bd96e24878d53e14", package = "zed-reqwest", version = "0.12.15-zed", default-features = false, features = [
     "charset",
     "http2",
     "macos-system-configuration",
