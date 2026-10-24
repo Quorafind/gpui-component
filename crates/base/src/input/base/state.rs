@@ -2945,7 +2945,16 @@ impl<M: InputModeKind> InputBaseState<M> {
         // Clamp the deferred target into the same safe range that
         // `update_scroll_offset` enforces on persist, so paint never shows an
         // over-scrolled frame before the post-paint clamp pulls it back.
-        let safe_y_min = (-self.scroll_size.height + self.input_bounds.size.height).min(px(0.));
+        //
+        // `scroll_size` is what the last paint measured, from before any edit
+        // made since. Text that edit added is already in the display map, so
+        // count its rows too: clamping to the old height alone sent a paste
+        // longer than the old content back to the top, away from the caret.
+        let content_height = self
+            .scroll_size
+            .height
+            .max(line_height * self.display_map.wrap_row_count());
+        let safe_y_min = (-content_height + self.input_bounds.size.height).min(px(0.));
         scroll_offset.x = scroll_offset.x.min(px(0.));
         scroll_offset.y = scroll_offset.y.clamp(safe_y_min, px(0.));
         self.deferred_scroll_offset = Some(scroll_offset);
