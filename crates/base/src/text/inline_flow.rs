@@ -690,6 +690,13 @@ impl Element for InlineFlow {
                     // The `Inline` is its own layout root, with no box around
                     // it: its text measures with the window's text style, so
                     // the fragment's style is pushed for the layout.
+                    //
+                    // Fragments are already line-broken by `layout_flow`; lay
+                    // the text out with unbounded width so it can never re-wrap.
+                    // Handing it exactly its measured width lets any sub-pixel
+                    // shaping difference push the last glyph onto a phantom
+                    // second line that overlaps the block below (CJK breaks
+                    // between every character, so a single hanzi drops down).
                     window.with_rem_size(Some(typography.rem_size), |window| {
                         window.with_text_style(
                             Some(fragment_style.subtract(&Default::default())),
@@ -697,9 +704,7 @@ impl Element for InlineFlow {
                                 element.prepaint_as_root(
                                     bounds.origin + origin + point(padding, Pixels::ZERO),
                                     size(
-                                        AvailableSpace::Definite(
-                                            fragment_size.width - padding * 2.,
-                                        ),
+                                        AvailableSpace::MaxContent,
                                         AvailableSpace::Definite(fragment_size.height),
                                     ),
                                     window,
